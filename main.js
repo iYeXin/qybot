@@ -1,0 +1,390 @@
+const WebSocket = require('ws');
+const path = require('path');
+const { getAccessToken, getWsLink, botSendMessage } = require('./api');
+
+// === 插件管理器 ===
+class PluginManager {
+  constructor() {
+    this.plugins = new Map(); // 消息类型 => 插件对象
+    this.defaultPlugin = null; // 默认插件
+  }
+
+  async loadPlugins(pluginDir) {
+    const fs = require('fs');
+
+    try {
+      // 确保插件目录存在
+      if (!fs.existsSync(pluginDir)) {
+        console.warn(`[PLUGIN] 插件目录不存在: ${pluginDir}`);
+        return;
+      }
+
+      const pluginDirs = fs.readdirSync(pluginDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name);
+
+      for (const dir of pluginDirs) {
+        const manifestPath = path.join(pluginDir, dir, 'manifest.json');
+
+        if (!fs.existsSync(manifestPath)) {
+          console.warn(`[PLUGIN] ${dir} 缺少 manifest.json`);
+          continue;
+        }
+
+        try {
+          const manifest = require(manifestPath);
+          const pluginPath = path.join(pluginDir, dir, manifest.mainExport);
+          const pluginModule = require(pluginPath);
+          const pluginObj = pluginModule[manifest.name];
+
+          if (!pluginObj || typeof pluginObj.main !== 'function') {
+            console.warn(`[PLUGIN] ${manifest.name} 缺少 main 方法`);
+            continue;
+          }
+
+          // 注册处理类型
+          manifest.processingTypes.forEach(type => {
+            if (type === 'default') {
+              this.defaultPlugin = pluginObj;
+            } else {
+              this.plugins.set(type, pluginObj);
+            }
+          });
+
+          // 初始化插件
+          if (typeof pluginObj.init === 'function') {
+            await pluginObj.init();
+            console.log(`[PLUGIN] ${manifest.name} 初始化完成`);
+          }
+        } catch (e) {
+          console.error(`[PLUGIN] 加载失败: ${dir}`, e);
+        }
+      }
+      console.log(`[PLUGIN] 插件加载完成，共加载 ${pluginDirs.length} 个插件`);
+    } catch (error) {
+      console.error('[PLUGIN] 插件加载失败:', error);
+    }
+  }
+
+  async processMessage(msgType, msgContent, senderOpenid) {
+    // 优先使用匹配的插件
+    const plugin = this.plugins.get(msgType);
+    if (plugin) {
+      try {
+        return await plugin.main(msgType, msgContent, senderOpenid);
+      } catch (e) {
+        console.error(`[PLUGIN] ${msgType} 处理失败:`, e);
+        return "插件处理出错";
+      }
+    }
+
+    // 其次使用默认插件
+    if (this.defaultPlugin) {
+      try {
+        return await this.defaultPlugin.main(msgType, msgContent, senderOpenid);
+      } catch (e) {
+        console.error('[PLUGIN] 默认插件处理失败:', e);
+      }
+    }
+
+    return null; // 无匹配插件
+  }
+
+  async cleanup() {
+    for (const [_, plugin] of this.plugins) {
+      if (typeof plugin.cleanup === 'function') {
+        try {
+          await plugin.cleanup();
+        } catch (e) {
+          console.error('[PLUGIN] 清理失败:', e);
+        }
+      }
+    }
+
+    if (this.defaultPlugin && typeof this.defaultPlugin.cleanup === 'function') {
+      try {
+        await this.defaultPlugin.cleanup();
+      } catch (e) {
+        console.error('[PLUGIN] 默认插件清理失败:', e);
+      }
+    }
+  }
+}
+
+// === QQ 机器人主类 ===
+class QQBot {
+  constructor() {
+    // 连接相关状态
+    this.heartbeat_interval = 0;
+    this.expires_in = 0;
+    this.session_id = null;
+    this.seq = 0;
+    this.restoreLink = false;
+    this.accessToken = null;
+
+    // 定时器
+    this.heartbeatTimer = null;
+    this.tokenRefreshTimer = null;
+    this.connectionResetTimer = null;
+
+    // WebSocket 实例
+    this.ws = null;
+
+    // 插件系统
+    this.pluginManager = new PluginManager();
+
+    // 崩溃恢复
+    process.on('uncaughtException', (err) => {
+      console.error(`[CRASH] 未捕获异常: ${err.stack}`);
+      this.safeResetConnection();
+    });
+  }
+
+  // 主初始化函数
+  async init() {
+    try {
+      // 加载插件
+      const pluginDir = path.join(__dirname, 'plugins');
+      await this.pluginManager.loadPlugins(pluginDir);
+
+      await this.setupConnection();
+      this.scheduleConnectionReset();
+    } catch (error) {
+      console.error(`初始化失败: ${error.message}`);
+      this.safeResetConnection(5000);
+    }
+  }
+
+  // 建立连接
+  async setupConnection() {
+    await this.anewGetAccessToken();
+    const wsLinkData = await getWsLink(this.accessToken);
+    console.log(`WS链接: ${wsLinkData.url}`);
+
+    this.ws = new WebSocket(wsLinkData.url);
+
+    this.ws.on('open', () => this.handleOpen());
+    this.ws.on('message', (data) => this.handleMessage(data));
+    this.ws.on('close', () => this.handleClose());
+    this.ws.on('error', (err) => this.handleError(err));
+  }
+
+  // 连接打开处理
+  handleOpen() {
+    console.log("WS连接成功");
+
+    if (this.restoreLink) {
+      console.log("恢复连接", JSON.stringify({
+        op: 6,
+        d: {
+          token: `QQBot ${this.accessToken}`,
+          session_id: this.session_id,
+          seq: this.seq + 1
+        }
+      }));
+
+      this.ws.send(JSON.stringify({
+        op: 6,
+        d: {
+          token: `QQBot ${this.accessToken}`,
+          session_id: this.session_id,
+          seq: this.seq + 1
+        }
+      }));
+
+      this.restoreLink = false;
+    } else {
+      this.sendSession(`QQBot ${this.accessToken}`);
+    }
+  }
+
+  // 消息处理
+  handleMessage(data) {
+    const ev = JSON.parse(data.toString());
+    console.log(`收到消息: ${JSON.stringify(ev)}`);
+
+    // 处理业务消息
+    if (ev.d?.content) {
+      this.processMessages(
+        ev.d.content,
+        ev.d.id,
+        ev.d.group_openid,
+        ev.d.author?.member_openid
+      );
+    }
+
+    // 更新心跳间隔
+    if (ev.d?.heartbeat_interval) {
+      this.heartbeat_interval = ev.d.heartbeat_interval;
+      console.log(`心跳周期: ${this.heartbeat_interval}`);
+    }
+
+    // 更新序列号
+    if (ev.s) {
+      this.seq = ev.s;
+      console.log(`序列号: ${this.seq}`);
+    }
+
+    // 首次连接处理
+    if (ev.t === "READY") {
+      this.session_id = ev.d.session_id;
+      console.log(`Session ID: ${this.session_id}`);
+      this.sendHeartbeat();
+    }
+
+    // 重连指令
+    if (ev.op === 7 || ev.op === 9) {
+      console.log("收到重连指令");
+      this.safeResetConnection();
+    }
+  }
+
+  // 关闭连接处理
+  handleClose() {
+    console.log("连接关闭，尝试重连...");
+    this.safeResetConnection(3000);
+  }
+
+  // 错误处理
+  handleError(err) {
+    console.error(`WS错误: ${err.message}`);
+    this.safeResetConnection(5000);
+  }
+
+  // 安全重置连接
+  safeResetConnection(delay = 0) {
+    console.log(`安全重置连接${delay ? ` (${delay}ms后)` : ''}`);
+    this.cleanupResources();
+
+    setTimeout(() => {
+      this.restoreLink = true;
+      this.init().catch(err => {
+        console.error(`重连失败: ${err.message}`);
+        this.safeResetConnection(10000);
+      });
+    }, delay);
+  }
+
+  // 清理资源
+  cleanupResources() {
+    // 清除定时器
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.tokenRefreshTimer) clearTimeout(this.tokenRefreshTimer);
+    if (this.connectionResetTimer) clearTimeout(this.connectionResetTimer);
+
+    // 关闭WebSocket
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.ws.close();
+      }
+      this.ws = null;
+    }
+
+    // 清理插件资源
+    this.pluginManager.cleanup();
+
+    // 重置状态
+    this.heartbeat_interval = 0;
+    this.heartbeatTimer = null;
+  }
+
+  // 定期重置连接（1小时）
+  scheduleConnectionReset() {
+    const RESET_INTERVAL = 1 * 60 * 60 * 1000;
+
+    this.connectionResetTimer = setTimeout(() => {
+      console.log("定期连接重置");
+      this.safeResetConnection();
+    }, RESET_INTERVAL);
+  }
+
+  // 发送心跳
+  sendHeartbeat() {
+    // 立即发送首次心跳
+    this.ws.send(JSON.stringify({ op: 1, d: null }));
+    console.log("发送首次心跳");
+
+    // 设置周期性心跳
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+
+    this.heartbeatTimer = setInterval(() => {
+      this.ws.send(JSON.stringify({ op: 1, d: this.seq }));
+      console.log(`发送心跳 (seq: ${this.seq})`);
+    }, this.heartbeat_interval);
+  }
+
+  // 发送鉴权session
+  sendSession(token) {
+    const msg = {
+      op: 2,
+      d: {
+        token: token,
+        intents: 0 | 1 << 25,
+        shard: [0, 1],
+        properties: {}
+      }
+    };
+
+    console.log(`发送鉴权: ${JSON.stringify(msg)}`);
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  // 获取新访问令牌
+  async anewGetAccessToken() {
+    try {
+      const accessTokenData = await getAccessToken();
+
+      // 修正数据结构访问方式
+      this.accessToken = accessTokenData.access_token;
+      this.expires_in = accessTokenData.expires_in * 1000;
+
+      console.log(`获取Token成功: ${this.accessToken}`);
+      console.log(`Token有效期: ${this.expires_in}ms`);
+
+      // 设置定时刷新
+      if (this.tokenRefreshTimer) clearTimeout(this.tokenRefreshTimer);
+
+      this.tokenRefreshTimer = setTimeout(() => {
+        console.log("刷新访问令牌");
+        this.anewGetAccessToken();
+      }, this.expires_in - 60000); // 提前1分钟刷新
+    } catch (error) {
+      console.error(`获取Token失败: ${error.message}`);
+      throw new Error("Token获取失败");
+    }
+  }
+
+  async processMessages(msg, id, group_id, sender_openid) {
+    try {
+      console.log(`发消息人openid: ${sender_openid}`);
+      const trimmed = msg.replace(/^[\s]+/, '');
+      const match = trimmed.match(/^(\S+)([\s\S]*)$/);
+      if (!match) {
+        console.log('无法解析消息格式');
+        return;
+      }
+      const msgType = match[1];
+      const msgContent = match[2] || '';
+      // 通过插件处理消息
+      const retMsg = await this.pluginManager.processMessage(
+        msgType,
+        msgContent,
+        sender_openid
+      );
+      // 发送回复
+      if (retMsg?.trim()) {
+        botSendMessage(this.accessToken, retMsg, id, group_id);
+      }
+    } catch (error) {
+      console.error(`消息处理失败: ${error.message}`);
+    }
+  }
+}
+
+// 启动机器人
+const bot = new QQBot();
+bot.init().catch(err => {
+  console.error(`机器人启动失败: ${err.message}`);
+  process.exit(1);
+});

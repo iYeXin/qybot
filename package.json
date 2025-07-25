@@ -1,0 +1,31 @@
+{
+  "name": "qybot",
+  "version": "1.0.2",
+  "description": "A Node.js-based QQ chatbot framework with plugin support",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "chatbot",
+    "bot",
+    "qq",
+    "plugin",
+    "framework"
+  ],
+  "author": "iYeXin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iYeXin/qybot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iYeXin/qybot/issues"
+  },
+  "homepage": "https://github.com/iYeXin/qybot#readme",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "ws": "^8.18.0"
+  }
+}

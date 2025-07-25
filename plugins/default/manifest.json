@@ -1,0 +1,9 @@
+{
+    "name": "defaultPlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "author": "iYeXin",
+    "processingTypes": [
+        "default"
+    ]
+}

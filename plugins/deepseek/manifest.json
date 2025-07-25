@@ -1,0 +1,11 @@
+{
+    "name": "deepseekPlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "author": "iYeXin",
+    "processingTypes": [
+        "chat",
+        "chatr1",
+        "deepseek"
+    ]
+}
