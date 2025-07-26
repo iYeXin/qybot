@@ -126,7 +126,7 @@ module.exports = {
 
                 const result = formatWeather(cityId.name, current, forecast)
 
-                console.log(result)
+                // console.log(result)
                 // 格式化结果
                 return result;
 
