@@ -1,6 +1,8 @@
 const config = require('./config');
 const https = require('https');
 const zlib = require('zlib');
+const genshinPlaces = require('./genshin.json')
+const cityIds = require('./city_id.json')
 
 // 解压Gzip响应
 function decompressResponse(res, callback) {
@@ -51,6 +53,10 @@ function fetchWeatherData(path, params) {
 // 获取城市LocationID
 async function getLocationId(cityName) {
     try {
+        if (config.GENSHIN_PLACE == true && genshinPlaces.includes(cityName)) {
+            console.log({ id: cityIds[getRandomKey(cityIds)], name: cityName })
+            return { id: cityIds[getRandomKey(cityIds)], name: cityName }
+        }
         const data = await fetchWeatherData('/geo/v2/city/lookup', {
             location: cityName,
             number: 1
@@ -107,6 +113,11 @@ function formatWeather(name, current, forecast) {
     return nowInfo + forecastInfo;
 }
 
+function getRandomKey(obj) {
+    const keys = Object.keys(obj);
+    return keys[Math.floor(Math.random() * keys.length)];
+}
+
 module.exports = {
     weatherPlugin: {
         async init() {
@@ -126,7 +137,7 @@ module.exports = {
 
                 const result = formatWeather(cityId.name, current, forecast)
 
-                // console.log(result)
+                console.log(result)
                 // 格式化结果
                 return result;
 

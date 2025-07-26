@@ -9,5 +9,6 @@ module.exports = {
     WEATHER_API_HOST: "https://abcxyz.qweatherapi.com", // 请将abcxyz.qweatherapi.com替换为控制台设置中的API Host
     WEATHER_API_KEY: "xxxxxx", // 请替换为实际API Key
     DEFAULT_LOCATION: "101010100", // 默认北京LocationID
-    TIMEOUT: 5000 // 请求超时时间(毫秒)
+    TIMEOUT: 5000, // 请求超时时间(毫秒)
+    GENSHIN_PLACE: false // 是否加入原神地名（随机加载）
 };
