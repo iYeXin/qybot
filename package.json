@@ -18,13 +18,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/iYeXin/qybot.git"
+    "url": "https://github.com/iYeXin/qybot."
   },
   "bugs": {
     "url": "https://github.com/iYeXin/qybot/issues"
   },
   "homepage": "https://github.com/iYeXin/qybot#readme",
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "axios": "^1.7.2",
     "ws": "^8.18.0"
   }

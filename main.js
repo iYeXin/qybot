@@ -1,30 +1,98 @@
 const WebSocket = require('ws');
 const path = require('path');
+const fs = require('fs');
 const { getAccessToken, getWsLink, botSendMessage } = require('./api');
+const AdmZip = require('adm-zip'); // 用于解压ZIP文件
 
 // === 插件管理器 ===
 class PluginManager {
   constructor() {
     this.plugins = new Map(); // 消息类型 => 插件对象
     this.defaultPlugin = null; // 默认插件
+    this.pluginDir = path.join(__dirname, 'plugins');
+    this.watcher = null; // 文件系统监听器
+    this.reloadDebounce = null; // 重载防抖计时器
   }
 
-  async loadPlugins(pluginDir) {
-    const fs = require('fs');
+  // 解压插件ZIP包
+  async extractPlugins() {
+    try {
+      const files = fs.readdirSync(this.pluginDir);
+      const zipFiles = files.filter(file => file.endsWith('.zip'));
+
+      for (const zipFile of zipFiles) {
+        const zipPath = path.join(this.pluginDir, zipFile);
+        console.log(`[PLUGIN] 发现ZIP插件包: ${zipFile}`);
+
+        try {
+          const zip = new AdmZip(zipPath);
+          const entries = zip.getEntries();
+
+          // 检查ZIP结构是否有效
+          const topLevelDirs = new Set();
+          entries.forEach(entry => {
+            if (entry.isDirectory) return;
+            const parts = entry.entryName.split('/');
+            if (parts.length > 1) {
+              topLevelDirs.add(parts[0]);
+            }
+          });
+
+          if (topLevelDirs.size !== 1) {
+            console.error(`[PLUGIN] ZIP包结构无效: ${zipFile} - 应包含单个顶级目录`);
+            continue;
+          }
+
+          const pluginDirName = [...topLevelDirs][0];
+          const targetDir = path.join(this.pluginDir, pluginDirName);
+
+          // 解压前备份已存在的插件
+          if (fs.existsSync(targetDir)) {
+            const backupDir = `${targetDir}_${Date.now()}`;
+            console.log(`[PLUGIN] 插件目录已存在, 备份到: ${backupDir}`);
+            fs.renameSync(targetDir, backupDir);
+          }
+
+          // 解压ZIP文件
+          console.log(`[PLUGIN] 解压到: ${targetDir}`);
+          zip.extractAllTo(this.pluginDir, true);
+
+          // 删除ZIP文件
+          fs.unlinkSync(zipPath);
+          console.log(`[PLUGIN] 已删除ZIP文件: ${zipFile}`);
+
+        } catch (e) {
+          console.error(`[PLUGIN] 解压失败: ${zipFile}`, e);
+        }
+      }
+    } catch (error) {
+      console.error('[PLUGIN] ZIP扫描失败:', error);
+    }
+  }
+
+  // 加载插件
+  async loadPlugins() {
+    // 解压新的ZIP插件包
+    await this.extractPlugins();
+
+    // 清除现有插件
+    this.plugins.clear();
+    this.defaultPlugin = null;
 
     try {
       // 确保插件目录存在
-      if (!fs.existsSync(pluginDir)) {
-        console.warn(`[PLUGIN] 插件目录不存在: ${pluginDir}`);
+      if (!fs.existsSync(this.pluginDir)) {
+        console.warn(`[PLUGIN] 创建插件目录: ${this.pluginDir}`);
+        fs.mkdirSync(this.pluginDir, { recursive: true });
         return;
       }
 
-      const pluginDirs = fs.readdirSync(pluginDir, { withFileTypes: true })
+      const pluginDirs = fs.readdirSync(this.pluginDir, { withFileTypes: true })
         .filter(dirent => dirent.isDirectory())
         .map(dirent => dirent.name);
 
       for (const dir of pluginDirs) {
-        const manifestPath = path.join(pluginDir, dir, 'manifest.json');
+        const manifestPath = path.join(this.pluginDir, dir, 'manifest.json');
 
         if (!fs.existsSync(manifestPath)) {
           console.warn(`[PLUGIN] ${dir} 缺少 manifest.json`);
@@ -32,8 +100,15 @@ class PluginManager {
         }
 
         try {
+          // 清除require缓存
+          delete require.cache[require.resolve(manifestPath)];
+
           const manifest = require(manifestPath);
-          const pluginPath = path.join(pluginDir, dir, manifest.mainExport);
+          const pluginPath = path.join(this.pluginDir, dir, manifest.mainExport);
+
+          // 清除插件模块缓存
+          delete require.cache[require.resolve(pluginPath)];
+
           const pluginModule = require(pluginPath);
           const pluginObj = pluginModule[manifest.name];
 
@@ -63,6 +138,55 @@ class PluginManager {
       console.log(`[PLUGIN] 插件加载完成，共加载 ${pluginDirs.length} 个插件`);
     } catch (error) {
       console.error('[PLUGIN] 插件加载失败:', error);
+    }
+  }
+
+  // 启动目录监听（使用原生fs.watch）
+  startWatching() {
+    if (this.watcher) return;
+
+    console.log('[PLUGIN] 启动插件目录监听');
+
+    // 创建原生文件系统监听器
+    this.watcher = fs.watch(this.pluginDir, (eventType, filename) => {
+      if (!filename) return;
+
+      console.log(`[PLUGIN] 检测到变更: ${eventType} ${filename}`);
+
+      // 只处理第一层目录变化
+      const filePath = path.join(this.pluginDir, filename);
+      const isDirectory = fs.existsSync(filePath) && fs.statSync(filePath).isDirectory();
+
+      if (isDirectory || filename.endsWith('.zip')) {
+        console.log(`[PLUGIN] 检测到插件相关变更: ${filename}`);
+
+        // 防抖处理（500毫秒）
+        if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
+
+        this.reloadDebounce = setTimeout(async () => {
+          console.log('[PLUGIN] 重新加载插件...');
+          await this.reloadPlugins();
+        }, 500);
+      }
+    });
+
+    // 处理错误
+    this.watcher.on('error', (err) => {
+      console.error('[PLUGIN] 目录监听错误:', err);
+    });
+  }
+
+  // 重新加载插件
+  async reloadPlugins() {
+    try {
+      // 清理现有插件
+      await this.cleanup();
+
+      // 加载新插件
+      await this.loadPlugins();
+      console.log('[PLUGIN] 插件重载完成');
+    } catch (e) {
+      console.error('[PLUGIN] 插件重载失败:', e);
     }
   }
 
@@ -108,6 +232,18 @@ class PluginManager {
         console.error('[PLUGIN] 默认插件清理失败:', e);
       }
     }
+
+    // 清除插件引用
+    this.plugins.clear();
+    this.defaultPlugin = null;
+  }
+
+  stopWatching() {
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = null;
+      console.log('[PLUGIN] 停止插件目录监听');
+    }
   }
 }
 
@@ -144,8 +280,10 @@ class QQBot {
   async init() {
     try {
       // 加载插件
-      const pluginDir = path.join(__dirname, 'plugins');
-      await this.pluginManager.loadPlugins(pluginDir);
+      await this.pluginManager.loadPlugins();
+
+      // 启动插件目录监听
+      this.pluginManager.startWatching();
 
       await this.setupConnection();
       this.scheduleConnectionReset();
@@ -283,6 +421,7 @@ class QQBot {
 
     // 清理插件资源
     this.pluginManager.cleanup();
+    this.pluginManager.stopWatching();
 
     // 重置状态
     this.heartbeat_interval = 0;

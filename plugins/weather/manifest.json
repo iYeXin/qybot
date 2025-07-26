@@ -1,0 +1,10 @@
+{
+    "name": "weatherPlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "auther": "iYeXin",
+    "processingTypes": [
+        "weather",
+        "天气"
+    ]
+}
