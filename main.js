@@ -1,7 +1,8 @@
 const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
-const { getAccessToken, getWsLink, botSendMessage } = require('./api');
+const { getAccessToken, getWsLink, uploadImage, botSendMessage, botSendImageMessage } = require('./api');
+const img2Url = require('./image')
 const AdmZip = require('adm-zip'); // 用于解压ZIP文件
 
 // === 插件管理器 ===
@@ -287,6 +288,7 @@ class QQBot {
 
       await this.setupConnection();
       this.scheduleConnectionReset();
+
     } catch (error) {
       console.error(`初始化失败: ${error.message}`);
       this.safeResetConnection(5000);
@@ -511,9 +513,25 @@ class QQBot {
         msgContent,
         sender_openid
       );
+
       // 发送回复
-      if (retMsg?.trim()) {
-        botSendMessage(this.accessToken, retMsg, id, group_id);
+      // 处理插件兼容性
+      if (Object.prototype.toString.call(retMsg) === '[object Object]') {
+        // 新版本插件，支持发送图片和文本
+        if (retMsg.image) {
+          let url = await img2Url(retMsg.image)
+          console.log(url)
+          let fileinfo = await uploadImage(this.accessToken, url, group_id)
+          console.log(fileinfo)
+          botSendImageMessage(this.accessToken, retMsg.text, fileinfo, id, group_id)
+        } else {
+          botSendMessage(this.accessToken, retMsg.text, id, group_id);
+        }
+      } else {
+        // 旧版本插件，发送文本
+        if (retMsg?.trim()) {
+          botSendMessage(this.accessToken, retMsg, id, group_id);
+        }
       }
     } catch (error) {
       console.error(`消息处理失败: ${error.message}`);
@@ -527,3 +545,4 @@ bot.init().catch(err => {
   console.error(`机器人启动失败: ${err.message}`);
   process.exit(1);
 });
+

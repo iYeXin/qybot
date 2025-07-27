@@ -2,7 +2,11 @@
 
 ## 概述
 
-QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机器人功能。插件存放在 `/plugins` 目录下，每个插件作为一个独立子目录。当机器人收到 `@bot` 开头的消息时，系统会解析消息类型，并调用相应插件的 `main` 方法处理消息。
+QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机器人功能。插件存放在 `/plugins` 目录下，每个插件作为一个独立子目录。当机器人收到 `@bot` 开头的消息时，系统会解析消息类型，并调用相应插件的 `main` 方法处理消息。插件支持返回文本+图片。
+
+## 插件市场
+
+你可以在[QYbot 插件市场](https://market.qybot.yexin.wiki/)寻找或上传插件
 
 ## 消息格式规范
 
@@ -40,6 +44,7 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
   "name": "pluginObjectName",
   "version": 1.0,
   "mainExport": "./main",
+  "auther": "iYeXin", // 可选
   "processingTypes": ["chat", "command", "default"]
 }
 ```
@@ -55,6 +60,7 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
 
 ### processingTypes 说明
 
+- 注意：为了适配官方的指令配置，建议在声明时同时声明`"原始指令"`和`"/原始指令"`
 - 消息类型匹配是**大小写敏感**的
 - 当多个插件声明处理同一消息类型时，**后加载的插件会覆盖**先加载的插件
 - 特殊值 `"default"` 表示该插件将处理所有未被其他插件匹配的消息
@@ -68,14 +74,27 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
 ```javascript
 /**
  * 插件主处理方法
- * @param {string} msgType - 消息类型（如 "chat"）
- * @param {string} msgContent - 消息内容（消息类型之后的有效文本）
- * @param {string} senderOpenid - 发送者的唯一标识符
- * @returns {Promise<string>} 返回处理结果的Promise，结果将作为机器人回复
+ * @param {string} msgType - 将传递消息类型（如 "天气"）
+ * @param {string} msgContent - 将传递消息内容（消息类型之后的有效文本）
+ * @param {string} senderOpenid - 发将传递送者的唯一标识符
+ * @returns {Promise<obiect>} 返回处理结果的Promise，结果应该为一个对象，包含`text`字段和`image`字段，text字段放置文本，image字段需放置Buffer类型图片（无图片返回不设置该字段）
+ *
+ * 注意：你也可以返回一个字符串的Promise，将作为纯文本消息发送
  */
 async function main(msgType, msgContent, senderOpenid) {
   // 插件处理逻辑
-  return "处理结果";
+  return { text: "文字消息", image: 图片二进制数据 };
+}
+```
+
+说明：你可以在`main方法`中进行任何逻辑处理，包括运算/调用外部 API 等
+
+### `main方法`返回值规范
+
+```javascript
+{
+  text: "这是回复的文本",
+  image: Buffer // 这是回复的图片（Buffer格式），该属性可选
 }
 ```
 
@@ -133,8 +152,8 @@ module.exports = {
 2. 主程序解析出消息类型 (`msgType`) 和内容 (`msgContent`)
 3. 根据 `msgType` 查找匹配的插件
 4. 调用插件对象的 `main()` 方法
-5. 插件处理完成后返回结果文本
-6. 主程序将结果文本作为回复消息发送
+5. 插件处理完成后返回回复对象
+6. 主程序将回复对象中的文本和图片作为回复消息发送
 
 ## 插件包封装
 
@@ -173,8 +192,6 @@ my-plugin.zip/
      }
    }
    ```
-
-````
 
 2. **配置管理**：
 
@@ -236,4 +253,7 @@ module.exports = {
 ```
 你好，user-openid！你说的是: 这是一条测试消息
 ```
-````
+
+```
+
+```

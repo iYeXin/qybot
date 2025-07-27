@@ -47,6 +47,23 @@ module.exports.getAccessToken = () => service({
 	}
 });
 
+// 上传图片
+module.exports.uploadImage = (accessToken, imgUrl, group_id) => {
+	const data = service({
+		url: `https://api.sgroup.qq.com/v2/groups/${group_id}/files`,
+		method: 'POST',
+		headers: {
+			Authorization: `QQBot ${accessToken}`
+		},
+		data: {
+			file_type: 1,
+			url: imgUrl,
+			srv_send_msg: false
+		}
+	});
+	return data
+}
+
 // 获取 ws 链接
 module.exports.getWsLink = (accessToken) => service({
 	url: `https://${botConfig.sandBox ? 'sandbox.' : ''}api.sgroup.qq.com/gateway`,
@@ -70,3 +87,24 @@ module.exports.botSendMessage = (accessToken, msg, id, group_id) => service({
 		msg_id: id
 	}
 });
+
+// 发送含图片消息
+module.exports.botSendImageMessage = (accessToken, msg, imgFileinfo = null, id, group_id) => {
+	let data = {
+		content: msg,
+		msg_type: 0,
+		msg_id: id
+	}
+	if (imgFileinfo) {
+		data.media = imgFileinfo,
+			data.msg_type = 7
+	}
+	service({
+		url: `https://api.sgroup.qq.com/v2/groups/${group_id}/messages`,
+		method: 'POST',
+		headers: {
+			Authorization: `QQBot ${accessToken}`
+		},
+		data
+	});
+}

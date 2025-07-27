@@ -19,6 +19,7 @@ module.exports = {
         // 主消息处理函数
         async main(msgType, msgContent, senderOpenid) {
             try {
+                if (msgType.startsWith('/')) msgType.slice(1)
                 switch (msgType) {
                     case 'chat':
                         return await this.handleChat('deepseek-chat', msgContent);

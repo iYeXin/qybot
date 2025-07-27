@@ -6,6 +6,9 @@
     "processingTypes": [
         "chat",
         "chatr1",
-        "deepseek"
+        "deepseek",
+        "/chat",
+        "/chatr1",
+        "/deepseek"
     ]
 }

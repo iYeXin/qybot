@@ -5,6 +5,8 @@
     "auther": "iYeXin",
     "processingTypes": [
         "weather",
-        "天气"
+        "天气",
+        "/weather",
+        "/天气"
     ]
 }

@@ -2,11 +2,22 @@
 
 QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 框架，采用插件化设计，支持快速扩展功能。通过简洁的 API 和灵活的架构，开发者可以轻松创建功能丰富的 QQ 机器人。
 
+## 1.1.0 新增
+
+- 插件部署支持插件包热重载
+- 提供官方插件市场服务
+- 增添了图片回复的能力
+- 完善了多篇文档
+
 ## 核心特性
 
 - **插件化架构** - 通过插件扩展机器人功能
 - **极简开发** - 快速上手，低学习曲线
 - **模块化设计** - 独立插件，互不干扰
+
+## 插件市场
+
+你可以在[QYbot 插件市场](https://market.qybot.yexin.wiki/)寻找或上传插件
 
 ## 快速开始
 
@@ -34,16 +45,23 @@ module.exports = {
   botConfig: {
     appId: "xxxxxxx", // 替换为你的AppId
     secret: "xxxxxxx", // 替换为你的AppSecret
+    imageServer: "https://market.qybot.yexin.wiki/upload-image/", // 图片上传接口，公共接口不保证稳定性
     sandBox: true, // 测试环境设为true，上线后设为false
   },
 };
 ```
 
+[imageServer 规范](./imageServer.md)
+
 ### 安装插件
 
-1. 将插件包放置在 `/plugins` 目录下（必要时解压）
+你可以在[QYbot 插件市场](https://market.qybot.yexin.wiki/)寻找或上传插件
+插件系统支持热重载，你可以在运行时直接将插件包放入插件目录，插件将自动加载
+
+1. 将插件包放置在 `/plugins` 目录下
 2. 根据插件要求进行配置（通常插件会提供配置说明）
-3. 插件目录结构示例：
+3. 对于适配的插件，你可以在[QQ 机器人控制台](https://q.qq.com/qqbot/#/developer/publish-config/function-config)中添加同名的指令
+4. 插件目录结构示例：
    ```
    /plugins/
      └── my-plugin/
@@ -132,7 +150,7 @@ QYbot 采用插件化架构，所有功能通过插件实现。插件开发文�
 
 ## 贡献指南
 
-欢迎贡献代码！
+欢迎贡献代码
 
 ## 许可证
 
