@@ -101,7 +101,7 @@ function formatWeather(name, current, forecast) {
 🌡️ 温度: ${current.temp}℃ | 体感: ${current.feelsLike}℃
 💨 ${current.windDir} ${current.windScale}级
 💧 湿度: ${current.humidity}% | 能见度: ${current.vis}公里
-🕒 更新时间: ${new Date(current.obsTime).toLocaleTimeString()}`;
+🕒 更新时间: ${new Date(current.obsTime).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
 
     let forecastInfo = "\n\n📅 未来三天预报:\n";
     forecast.slice(0, 3).forEach(day => {
@@ -134,11 +134,11 @@ module.exports = {
 
                 // 获取天气数据
                 const { current, forecast } = await getWeather(cityId.id);
-
+                // 格式化结果
                 const result = formatWeather(cityId.name, current, forecast)
 
                 console.log(result)
-                // 格式化结果
+
                 return result;
 
             } catch (error) {
