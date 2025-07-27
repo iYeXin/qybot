@@ -519,10 +519,15 @@ class QQBot {
       if (Object.prototype.toString.call(retMsg) === '[object Object]') {
         // 新版本插件，支持发送图片和文本
         if (retMsg.image) {
-          let url = await img2Url(retMsg.image)
-          console.log(url)
+          let url;
+          if (typeof retMsg.image == 'string') {
+            url = retMsg.image
+          } else {
+            url = await img2Url(retMsg.image)
+          }
+          console.log('图片上传成功')
           let fileinfo = await uploadImage(this.accessToken, url, group_id)
-          console.log(fileinfo)
+          console.log('fileinfo 获取成功')
           botSendImageMessage(this.accessToken, retMsg.text, fileinfo, id, group_id)
         } else {
           botSendMessage(this.accessToken, retMsg.text, id, group_id);

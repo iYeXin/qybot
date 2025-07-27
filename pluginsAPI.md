@@ -77,13 +77,13 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
  * @param {string} msgType - 将传递消息类型（如 "天气"）
  * @param {string} msgContent - 将传递消息内容（消息类型之后的有效文本）
  * @param {string} senderOpenid - 发将传递送者的唯一标识符
- * @returns {Promise<obiect>} 返回处理结果的Promise，结果应该为一个对象，包含`text`字段和`image`字段，text字段放置文本，image字段需放置Buffer类型图片（无图片返回不设置该字段）
+ * @returns {Promise<obiect>} 返回处理结果的Promise，结果应该为一个对象，包含`text`字段和`image`字段，text字段放置文本，image字段需放置Buffer类型图片或图片url（无图片返回不设置该字段）
  *
  * 注意：你也可以返回一个字符串的Promise，将作为纯文本消息发送
  */
 async function main(msgType, msgContent, senderOpenid) {
   // 插件处理逻辑
-  return { text: "文字消息", image: 图片二进制数据 };
+  return { text: "文字消息", image: 图片二进制数据 或 图片url };
 }
 ```
 
@@ -252,8 +252,4 @@ module.exports = {
 
 ```
 你好，user-openid！你说的是: 这是一条测试消息
-```
-
-```
-
 ```
