@@ -94,7 +94,7 @@ async function main(msgType, msgContent, senderOpenid) {
 ```javascript
 {
   text: "这是回复的文本",
-  image: Buffer // 这是回复的图片（Buffer格式），该属性可选
+  image: Buffer 或 字符串类型的url // 该属性可选
 }
 ```
 
