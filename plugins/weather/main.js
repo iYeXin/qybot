@@ -126,7 +126,6 @@ module.exports = {
 
         async main(msgType, msgContent, senderOpenid) {
             try {
-                if (msgType.startsWith('/')) msgType.slice(1)
                 // 获取城市名称或使用默认
                 const city = msgContent.trim() || '北京';
 

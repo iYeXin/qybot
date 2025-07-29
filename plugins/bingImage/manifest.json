@@ -1,0 +1,12 @@
+{
+    "name": "bingImagePlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "author": "iYeXin",
+    "processingTypes": [
+        "壁纸",
+        "/bing",
+        "/壁纸",
+        "bing"
+    ]
+}

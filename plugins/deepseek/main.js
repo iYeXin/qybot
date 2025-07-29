@@ -19,13 +19,14 @@ module.exports = {
         // 主消息处理函数
         async main(msgType, msgContent, senderOpenid) {
             try {
-                if (msgType.startsWith('/')) msgType.slice(1)
+                if (msgType.startsWith('/')) msgType = msgType.slice(1)
                 switch (msgType) {
                     case 'chat':
-                        return await this.handleChat('deepseek-chat', msgContent);
-
                     case 'chatr1':
-                        return await this.handleChat('deepseek-reasoner', msgContent);
+                        return await this.handleChat(
+                            msgType === 'chat' ? 'deepseek-chat' : 'deepseek-reasoner',
+                            msgContent
+                        );
 
                     case 'deepseek':
                         return await this.handleBalance();
@@ -39,10 +40,38 @@ module.exports = {
             }
         },
 
-        // 处理聊天请求
+        // 处理聊天请求（新增图片转换和降级处理）
         async handleChat(model, content) {
             const fullContent = `${content}${config.SAFE_RESPONSE_CONFIG}`;
-            return await deepseekAPI.chat(model, fullContent);
+            const markdownResponse = await deepseekAPI.chat(model, fullContent);
+
+            // 1. 检查是否支持md2img功能
+            if (!this.ctx?.utils?.md2img) {
+                console.log('[DeepSeek] 上下文未提供md2img方法，返回原始Markdown');
+                return markdownResponse;
+            }
+
+            // 2. 尝试转换为图片（带超时和错误处理）
+            try {
+                const imageConversion = this.ctx.utils.md2img(markdownResponse);
+
+                // 设置5秒超时
+                const timeout = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('图片转换超时')), 8000)
+                );
+
+                const imageBuffer = await Promise.race([imageConversion, timeout]);
+
+                return {
+                    text: ' ',
+                    image: imageBuffer
+                };
+            } catch (conversionError) {
+                console.error(`[DeepSeek] Markdown转图片失败: ${conversionError.message}`);
+
+                // 降级处理：返回原始Markdown文本
+                return markdownResponse;
+            }
         },
 
         // 处理余额查询

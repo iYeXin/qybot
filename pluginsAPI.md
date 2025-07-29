@@ -2,7 +2,7 @@
 
 ## 概述
 
-QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机器人功能。插件存放在 `/plugins` 目录下，每个插件作为一个独立子目录。当机器人收到 `@bot` 开头的消息时，系统会解析消息类型，并调用相应插件的 `main` 方法处理消息。插件支持返回文本+图片。
+QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机器人功能。插件存放在 `/plugins` 目录下，每个插件作为一个独立子目录。当机器人收到 `@bot` 开头的消息时，系统会解析消息类型，并调用相应插件的 `main` 方法处理消息。插件支持返回文本+图片组合消息。
 
 ## 插件市场
 
@@ -13,13 +13,17 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
 用户消息必须遵循以下格式：
 
 ```
+
 @bot <消息类型> <消息内容>
+
 ```
 
 示例：
 
 ```
+
 @bot chat 你好，今天天气如何？
+
 ```
 
 - `@bot` 与消息类型之间必须有**一个空格**
@@ -29,12 +33,14 @@ QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机�
 ## 插件目录结构
 
 ```
+
 /plugins/
-  └── plugin-name/          # 插件目录
-        ├── manifest.json   # 插件声明文件（必需）
-        ├── main.js         # 主程序文件（必需）
-        ├── config.js       # 配置文件（可选）
-        └── other-files     # 其他支持文件
+└── plugin-name/ # 插件目录
+├── manifest.json # 插件声明文件（必需）
+├── main.js # 主程序文件（必需）
+├── config.js # 配置文件（可选）
+└── other-files # 其他支持文件
+
 ```
 
 ## manifest.json 规范
@@ -122,7 +128,71 @@ async function cleanup() {
 }
 ```
 
-### 完整插件示例
+## 插件上下文
+
+插件可在插件对象中通过 `this.ctx` 访问共享资源：
+
+```javascript
+// this.ctx
+{
+  utils: {
+    md2html, // Markdown转HTML  传入markdown字符串，返回HTML字符串
+    html2img, // HTML转图片   传入HTML字符串，返回buffer类型图片
+    md2img,   // Markdown直接转图片   传入markdown字符串，返回buffer类型图片
+  }
+}
+```
+
+### 图片生成工具详解
+
+#### 1. md2html(markdownText, options)
+
+将 Markdown 转换为 HTML
+
+- `markdownText`: Markdown 格式文本
+- `options`: 配置选项（可选）
+  - `html`: 允许 HTML 标签（默认 true）
+  - `linkify`: 自动转换 URL 为链接（默认 true）
+  - `typographer`: 启用印刷替换（默认 true）
+  - `plugins`: 要加载的 markdown-it 插件数组
+
+#### 2. html2img(htmlContent, options)
+
+将 HTML 转换为图片
+
+- `htmlContent`: HTML 内容
+- `options`: 配置选项（可选）
+  - `width`: 图片宽度（默认 450，移动端友好）
+  - `height`: 图片高度（可选）
+  - `quality`: 图片质量（1-100，默认 90）
+  - `type`: 图片格式（'png' 或 'jpeg'，默认 'png'）
+  - `fullPage`: 是否截取整个页面（默认 true）
+  - `transparent`: 是否透明背景（默认 false）
+  - `timeout`: 操作超时时间（毫秒，默认 30000）
+  - `waitFor`: 额外等待时间（毫秒，默认 0）
+
+#### 3. md2img(markdownText, options)
+
+将 Markdown 直接转换为图片
+
+- `markdownText`: Markdown 格式文本
+- `options`: 配置选项（可选）
+  - `mdOptions`: md2html 的配置
+  - `imgOptions`: html2img 的配置
+
+#### 4. 样式说明
+
+Markdown 转换默认使用类 GitHub 暗色主题样式，开发者可自行通过 HTML 进行配置
+
+### Chrome 支持要求
+
+- 图片生成功能需要系统安装 **Chrome 浏览器**
+- 支持 Windows/macOS/Linux 系统
+- 自动检测安装路径，也可通过 `CHROME_PATH` 环境变量指定
+
+## 完整插件示例
+
+### 文本插件示例
 
 ```javascript
 // main.js
@@ -146,14 +216,70 @@ module.exports = {
 };
 ```
 
+### 图片生成插件示例
+
+```javascript
+// chart-plugin/main.js
+module.exports = {
+  chartPlugin: {
+    async main(_, content) {
+      try {
+        // 生成图表SVG
+        const chartSVG = generateChart(content);
+
+        // 转换SVG为图片
+        const imgBuffer = await this.ctx.utils.html2img(
+          `<div style="background:white;padding:20px">${chartSVG}</div>`,
+          { width: 800 }
+        );
+
+        return {
+          text: "数据分析结果：",
+          image: imgBuffer,
+        };
+      } catch (error) {
+        return "图表生成失败：" + error.message;
+      }
+    },
+  },
+};
+```
+
+### Markdown 转图片插件示例
+
+```javascript
+// markdown-plugin/main.js
+module.exports = {
+  markdownPlugin: {
+    async main(_, markdownContent) {
+      try {
+        // 使用上下文工具转换Markdown
+        const imgBuffer = await this.ctx.utils.md2img(markdownContent, {
+          imgOptions: { width: 600 },
+        });
+
+        return {
+          text: "转换结果：",
+          image: imgBuffer,
+        };
+      } catch (error) {
+        return "转换失败：" + error.message;
+      }
+    },
+  },
+};
+```
+
 ## 消息处理流程
 
 1. 用户发送消息：`@bot <msgType> <msgContent>`
 2. 主程序解析出消息类型 (`msgType`) 和内容 (`msgContent`)
 3. 根据 `msgType` 查找匹配的插件
 4. 调用插件对象的 `main()` 方法
-5. 插件处理完成后返回回复对象
-6. 主程序将回复对象中的文本和图片作为回复消息发送
+5. 插件处理完成后返回回复对象：
+   - 纯文本：直接发送
+   - 文本+图片：先上传图片到服务器，然后发送图文组合消息
+6. 主程序将回复消息发送给用户
 
 ## 插件包封装
 
@@ -180,6 +306,8 @@ my-plugin.zip/
 
 ## 最佳实践
 
+### 通用建议
+
 1. **错误处理**：
 
    ```javascript
@@ -199,14 +327,49 @@ my-plugin.zip/
    - 避免在代码中硬编码敏感信息
 
 3. **资源管理**：
-
    - 在 `init()` 中初始化资源
    - 在 `cleanup()` 中释放资源
    - 使用异步方法处理耗时操作
 
-4. **日志记录**：
-   - 在关键步骤添加日志记录
-   - 包含插件名称前缀以便区分
+### 图片生成建议
+
+1. **性能优化**：
+
+   ```javascript
+   // 使用缓存提高图片生成性能
+   const imageCache = new Map();
+
+   async main(_, content) {
+     if (imageCache.has(content)) {
+       return {
+         text: "缓存结果",
+         image: imageCache.get(content)
+       };
+     }
+
+     const newImage = await generateImage(content);
+     imageCache.set(content, newImage);
+     return { text: "新生成", image: newImage };
+   }
+   ```
+
+2. **轻量化处理**：
+
+   ```javascript
+   // 直接使用远程 URL代替 Buffer
+   async main() {
+     const imageUrl = "https://example.com/pre-generated-image.png";
+     return {
+       text: "图片结果",
+       image: imageUrl
+     };
+   }
+   ```
+
+3. **内容精简**：
+   - 避免生成过大的图片（超过 1MB）
+   - 压缩图片质量：`{ quality: 80 }`
+   - 限制图片尺寸：`{ width: 800 }`
 
 ## 插件开发示例
 
@@ -240,7 +403,26 @@ module.exports = {
 };
 ```
 
-### 4. 使用插件
+### 4. 创建图片插件 (main.js)
+
+```javascript
+// image-plugin/main.js
+module.exports = {
+  imagePlugin: {
+    async main() {
+      // 生成动态图片
+      const imgBuffer = await generateDynamicImage();
+
+      return {
+        text: "这是为您生成的图片：",
+        image: imgBuffer,
+      };
+    },
+  },
+};
+```
+
+### 5. 使用插件
 
 用户发送：
 
@@ -253,3 +435,25 @@ module.exports = {
 ```
 你好，user-openid！你说的是: 这是一条测试消息
 ```
+
+用户发送：
+
+```
+@bot image 生成风景图
+```
+
+机器人回复：
+
+```
+这是为您生成的图片：[图片]
+```
+
+## 开发潜力
+
+### 图片生成应用场景
+
+1. **数据可视化** - 动态生成图表和报表
+2. **教育工具** - 数学公式/化学结构转图片
+3. **内容摘要** - 网页/长文转图文摘要
+4. **游戏系统** - 生成游戏状态图片
+5. **AI 集成** - 人工智能生成图文内容（参加 deepseek 插件）

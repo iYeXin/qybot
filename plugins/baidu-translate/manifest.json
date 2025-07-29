@@ -1,0 +1,12 @@
+{
+  "name": "translationPlugin",
+  "version": 1.0,
+  "mainExport": "./main",
+  "auther": "ZhouZhouoO, iYeXin",
+  "processingTypes": [
+    "翻译",
+    "/翻译",
+    "语言",
+    "/语言"
+  ]
+}

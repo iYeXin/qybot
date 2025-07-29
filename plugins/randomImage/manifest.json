@@ -1,0 +1,10 @@
+{
+  "name": "randomImage",
+  "version": 1.0,
+  "mainExport": "./main",
+  "auther": "ZhouZhou",
+  "processingTypes": [
+    "image",
+    "/image"
+  ]
+}

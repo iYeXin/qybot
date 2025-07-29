@@ -4,13 +4,24 @@ const fs = require('fs');
 const { getAccessToken, getWsLink, uploadImage, botSendMessage, botSendImageMessage } = require('./api');
 const img2Url = require('./image')
 const AdmZip = require('adm-zip'); // 用于解压ZIP文件
+const { md2html, html2img, md2img } = require('./toImg'); // 引入图片生成模块
+
+// 创建插件上下文对象
+const pluginContext = {
+  utils: {
+    md2html,
+    html2img,
+    md2img
+  }
+};
 
 // === 插件管理器 ===
 class PluginManager {
-  constructor() {
+  constructor(ctx) {
     this.plugins = new Map(); // 消息类型 => 插件对象
     this.defaultPlugin = null; // 默认插件
     this.pluginDir = path.join(__dirname, 'plugins');
+    this.context = ctx;
     this.watcher = null; // 文件系统监听器
     this.reloadDebounce = null; // 重载防抖计时器
   }
@@ -112,6 +123,9 @@ class PluginManager {
 
           const pluginModule = require(pluginPath);
           const pluginObj = pluginModule[manifest.name];
+
+          // 注入上下文到插件对象
+          pluginObj.ctx = this.context;
 
           if (!pluginObj || typeof pluginObj.main !== 'function') {
             console.warn(`[PLUGIN] ${manifest.name} 缺少 main 方法`);
@@ -268,7 +282,7 @@ class QQBot {
     this.ws = null;
 
     // 插件系统
-    this.pluginManager = new PluginManager();
+    this.pluginManager = new PluginManager(pluginContext); // 传入上下文
 
     // 崩溃恢复
     process.on('uncaughtException', (err) => {
