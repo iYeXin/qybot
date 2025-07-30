@@ -186,11 +186,10 @@ function md2html(markdownText, options = {}) {
       <style>
             body {
              /*类 GitHub 暗色风格 */
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Microsoft YaHei", sans-serif;
             line-height: 1.6;
             color: #c9d1d9;
-            padding: 30px;
-            max-width: 800px;
+            padding: 35px;
             margin: 0 auto;
             background: #0d1117; 
             }

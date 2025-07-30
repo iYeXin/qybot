@@ -7,8 +7,12 @@
         "chat",
         "chatr1",
         "deepseek",
+        "chat-w",
+        "chatr1-w",
         "/chat",
         "/chatr1",
-        "/deepseek"
+        "/deepseek",
+        "/chat-w",
+        "/chatr1-w"
     ]
 }

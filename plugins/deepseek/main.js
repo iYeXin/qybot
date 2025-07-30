@@ -9,6 +9,8 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 // 创建API实例
 const deepseekAPI = new DeepSeekAPI(config.API_KEY);
 
+let wide = ''
+
 module.exports = {
     deepseekPlugin: {
         // 插件初始化
@@ -20,6 +22,7 @@ module.exports = {
         async main(msgType, msgContent, senderOpenid) {
             try {
                 if (msgType.startsWith('/')) msgType = msgType.slice(1)
+                if (msgType.endsWith('-w')) [msgType, wide] = msgType.split('-')
                 switch (msgType) {
                     case 'chat':
                     case 'chatr1':
@@ -45,16 +48,18 @@ module.exports = {
             const fullContent = `${content}${config.SAFE_RESPONSE_CONFIG}`;
             const markdownResponse = await deepseekAPI.chat(model, fullContent);
 
-            // 1. 检查是否支持md2img功能
             if (!this.ctx?.utils?.md2img) {
                 console.log('[DeepSeek] 上下文未提供md2img方法，返回原始Markdown');
                 return markdownResponse;
             }
 
-            // 2. 尝试转换为图片（带超时和错误处理）
             try {
-                const imageConversion = this.ctx.utils.md2img(markdownResponse);
-
+                let imageConversion;
+                if (wide) {
+                    imageConversion = this.ctx.utils.md2img(markdownResponse, { imgOptions: { width: 1080 } });
+                } else {
+                    imageConversion = this.ctx.utils.md2img(markdownResponse);
+                }
                 // 设置5秒超时
                 const timeout = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('图片转换超时')), 8000)
