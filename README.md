@@ -42,8 +42,6 @@ cd qybot
 # 编辑 app.js 文件，填入你的AppId和AppSecret
 ```
 
-````
-
 ### app.js 配置示例
 
 ```javascript
@@ -222,4 +220,3 @@ async main(_, content) {
 ```
 
 ```
-````
