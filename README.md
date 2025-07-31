@@ -216,7 +216,3 @@ async main(_, content) {
 ## 技术支持
 
 如有任何问题，请提交 [Issues](https://github.com/iYeXin/qybot/issues)
-
-```
-
-```
