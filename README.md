@@ -36,8 +36,10 @@ QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 
 ```bash
 # 克隆项目
 git clone https://github.com/iYeXin/qybot
+# 或下载源码解压
 cd qybot
-
+# 安装依赖
+npm i
 # 配置机器人
 # 编辑 app.js 文件，填入你的AppId和AppSecret
 ```
