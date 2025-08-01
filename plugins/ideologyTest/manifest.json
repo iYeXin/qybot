@@ -1,0 +1,9 @@
+{
+    "name": "ideologyTestPlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "processingTypes": [
+        "意识形态",
+        "/意识形态"
+    ]
+}
