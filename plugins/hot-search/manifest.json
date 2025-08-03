@@ -1,0 +1,9 @@
+{
+    "name": "hotSearchPlugin",
+    "version": 1.0,
+    "mainExport": "./main",
+    "processingTypes": [
+        "热搜",
+        "/热搜"
+    ]
+}
