@@ -10,13 +10,14 @@ QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 
 - **插件热重载** - 支持插件包运行时自动加载
 - **官方插件市场** - 提供插件共享平台
 - **文档完善** - 新增图片生成 API 说明和开发示例
+- **私聊功能支持** - 适配 QQ 官方私聊接口，不影响原先插件使用
 
 ## 核心特性
 
 - **插件化架构** - 通过插件扩展机器人功能
 - **图文混合回复** - 支持文本+图片组合消息
 - **极简开发** - 快速上手，低学习曲线
-- **模块化设计** - 独立插件，互不干扰
+- **模块化设计** - 独立插件，互不干扰 s
 
 ## 插件市场
 
@@ -28,18 +29,19 @@ QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 
 
 1. 在[QQ 开放平台](https://q.qq.com/)注册账号并创建机器人
 2. 获取机器人的 `AppId` 和 `AppSecret`
-3. 将服务器 IP 添加到 QQ 平台的白名单
-4. **确保有 Chrome 浏览器**（本地图片生成功能必需）
+3. 将服务器/本机主机的公网 IP 添加到 QQ 平台的白名单
+4. **(可选)设备需安装 Chrome 浏览器**（本地图片生成功能必需）
+5. 在[ QQ 机器人管理端 ](https://q.qq.com/qqbot/#/developer/sandbox)沙箱配置中添加允许的用户才能发送私聊消息(对于未上线的机器人)
 
 ### 安装部署
+
+详见[快速开始](https://docs.qybot.yexin.wiki/start.html)
 
 ```bash
 # 克隆项目
 git clone https://github.com/iYeXin/qybot
-# 或下载源码解压
 cd qybot
-# 安装依赖
-npm i
+
 # 配置机器人
 # 编辑 app.js 文件，填入你的AppId和AppSecret
 ```
@@ -170,36 +172,6 @@ module.exports = {
 
 机器人回复：
 ![生成的Markdown图片](#)
-
-## 开发潜力
-
-### 你可以
-
-- **AI 集成** - 接入人工智能生成图文内容 （参见 deepdeek 插件）
-- **数据可视化** - 动态生成数据图表
-- **教育工具** - 数理化公式转图片
-- **内容摘要** - 网页内容转图文摘要
-- **游戏系统** - 生成游戏状态图片
-
-### 性能优化
-
-```javascript
-// 使用缓存提高性能
-const cachedImages = new Map();
-
-async main(_, content) {
-  if (cachedImages.has(content)) {
-    return {
-      text: "缓存结果",
-      image: cachedImages.get(content)
-    };
-  }
-
-  const newImage = await generateImage(content);
-  cachedImages.set(content, newImage);
-  return { text: "新生成", image: newImage };
-}
-```
 
 ## 常见问题
 
