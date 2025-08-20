@@ -29,7 +29,7 @@
     "axios": "^1.7.2",
     "chokidar": "^4.0.3",
     "markdown-it": "^14.1.0",
-    "puppeteer-core": "^24.15.0",
+    "puppeteer": "^24.16.2",
     "ws": "^8.18.0"
   }
 }

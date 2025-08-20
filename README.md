@@ -1,12 +1,13 @@
 # QYbot - 轻量级 QQ 机器人框架
 
+（CHromium 分支）
 QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 框架，采用插件化设计，支持快速扩展功能。通过简洁的 API 和灵活的架构，开发者可以轻松创建功能丰富的 QQ 机器人。
 
 ## 1.1 版本新增
 
 - **图片生成支持** - 新增 Markdown/HTML 转图片功能，支持图文混合回复
 - **插件上下文增强** - 提供图片生成工具链（md2html/html2img/md2img）
-- **Chrome 集成** - 支持本地 Chrome 渲染高质量图片
+- **Chromium 集成** - 内嵌 Chromium 渲染高质量图片
 - **插件热重载** - 支持插件包运行时自动加载
 - **官方插件市场** - 提供插件共享平台
 - **文档完善** - 新增图片生成 API 说明和开发示例
@@ -31,8 +32,7 @@ QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 
 1. 在[QQ 开放平台](https://q.qq.com/)注册账号并创建机器人
 2. 获取机器人的 `AppId` 和 `AppSecret`
 3. 将服务器/本机主机的公网 IP 添加到 QQ 平台的白名单
-4. **(可选)设备需安装 Chrome 浏览器**（本地图片生成功能必需）
-5. 在[ QQ 机器人管理端 ](https://q.qq.com/qqbot/#/developer/sandbox)沙箱配置中添加允许的用户才能发送私聊消息(对于未上线的机器人)
+4. 在[ QQ 机器人管理端 ](https://q.qq.com/qqbot/#/developer/sandbox)沙箱配置中添加允许的用户才能发送私聊消息(对于未上线的机器人)
 
 ### 安装部署
 
@@ -42,6 +42,7 @@ QYbot 是一个接入 QQ 官方机器人，轻量级、模块化的群聊 QQbot 
 # 克隆项目
 git clone https://github.com/iYeXin/qybot
 cd qybot
+npm install
 
 # 配置机器人
 # 编辑 app.js 文件，填入你的AppId和AppSecret

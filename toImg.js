@@ -1,6 +1,4 @@
-const fs = require('fs');
-const path = require('path');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const markdownIt = require('markdown-it');
 
 // 浏览器池管理器
@@ -40,10 +38,8 @@ class BrowserPool {
     }
 
     async launchBrowser() {
-        const executablePath = getChromePath();
-
+        // 使用puppeteer内置的Chromium
         const browser = await puppeteer.launch({
-            executablePath,
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -112,43 +108,17 @@ process.on('SIGINT', () => process.exit());
 process.on('SIGTERM', () => process.exit());
 
 /**
- * 获取本地 Chrome 安装路径
+ * 获取本地 Chrome 安装路径 (保持接口兼容性)
  * @returns {string} Chrome 路径
  * @throws {Error} 如果未找到 Chrome
  */
 function getChromePath() {
-    // 1. 检查环境变量
-    if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
-        return process.env.CHROME_PATH;
+    // 返回puppeteer内置的Chromium路径
+    try {
+        return require('puppeteer').executablePath();
+    } catch (e) {
+        throw new Error('Chrome not found. Please install puppeteer package');
     }
-
-    // 2. 常见安装路径回退
-    const platform = process.platform;
-    const commonPaths = {
-        win32: [
-            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-            process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe'
-        ],
-        darwin: [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'
-        ],
-        linux: [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser'
-        ]
-    };
-
-    for (const chromePath of commonPaths[platform] || []) {
-        if (fs.existsSync(chromePath)) {
-            return chromePath;
-        }
-    }
-
-    throw new Error('Chrome not found. Please install Chrome or set CHROME_PATH environment variable');
 }
 
 /**
@@ -294,7 +264,7 @@ async function html2img(htmlContent, options = {}) {
         transparent = false,
         deviceScaleFactor = 2,
         timeout = 30000,
-        chromePath,
+        chromePath, // 保持参数兼容性，但不再使用
         waitFor = 0
     } = options;
 
