@@ -1,459 +1,307 @@
-# QYbot 插件系统文档
+# QYbot 插件开发文档
 
-## 概述
+QYbot 的插件放在 `plugins/<插件目录>/` 下。框架支持两代插件 API，二者可以共存：
 
-QYbot 插件系统采用模块化设计，允许开发者通过插件扩展机器人功能。插件存放在 `/plugins` 目录下，每个插件作为一个独立子目录。当机器人收到 `@bot` 开头的消息或收到**私聊消息**时，系统会解析消息类型，并调用相应插件的 `main` 方法处理消息。插件支持返回文本+图片组合消息。
+| | `api: 1`（旧版 / 缺省） | `api: 2`（新版，推荐） |
+| --- | --- | --- |
+| manifest | 需 `processingTypes`，入口字段 `mainExport` | 需 `"api": 2`，无需 `processingTypes`，入口字段 `entry` |
+| 入口导出 | 与 `name` 同名的插件对象（`main` / `init` / `cleanup`） | `init(ctx)` 函数（具名导出或默认导出） |
+| 消息匹配 | 消息的第一个词（消息类型） | `prefix` 前缀 / `match` 正则 / 群 ID 过滤 |
+| 注册方式 | 框架按 `processingTypes` 分发 | 插件主动 `ctx.register(...)` |
+| 图片工具 | `this.ctx.utils.md2img` 等 | `ctx.util.image.withMarkdown` 等 |
+| 卸载 | 插件对象的 `cleanup()` | `ctx.onUnload(cb)` |
+
+> **旧插件无需任何修改**，框架会自动按 `api: 1` 处理。
 
 ## 插件市场
 
-你可以在[QYbot 插件市场](https://market.qybot.yexin.wiki/)寻找或上传插件
+你可以在 [QYbot 插件市场](https://market.qybot.yexin.wiki/) 寻找或上传插件。
 
-## 消息格式规范
-
-用户消息必须遵循以下格式：
+## 目录结构与文件类型
 
 ```
-// 群聊
-@bot <消息类型> <消息内容>
-
-// 私聊
-<消息类型> <消息内容>
-
+plugins/
+└── my-plugin/
+    ├── manifest.json   # 插件声明（必需）
+    ├── main.ts         # 入口文件（必需，可以是 .ts/.mts/.mjs/.js）
+    ├── config.ts       # 其他文件（可选）
+    └── data.json
 ```
 
-示例：
+入口文件（`manifest.mainExport`）的解析规则：
 
-```
+- 带扩展名时直接使用，例如 `"./main.mjs"`
+- 不带扩展名时按 **`.ts` → `.mts` → `.mjs` → `.js`** 的顺序探测
 
-@bot chat 你好，今天天气如何？
+模块类型规则：
 
-```
+| 扩展名 | 模块类型 | 说明 |
+| --- | --- | --- |
+| `.ts` | **ESM** | 新版插件推荐，框架强制按 ESM 解析 |
+| `.mts` | **ESM** | TypeScript ESM |
+| `.mjs` | **ESM** | JavaScript ESM |
+| `.js` / `.cjs` | **CommonJS** | 兼容旧插件的 `require` / `module.exports` |
 
-- `@bot(可选)` 与消息类型之间必须有**一个空格**
-- 消息类型与消息内容之间必须有**一个空格**
-- 消息内容可以是任意文本
+**新插件请一律使用 ESM**（`export` / `import`），旧插件的 CommonJS 写法继续可用。
 
-## 插件目录结构
+> `plugins/package.json` 中声明了 `"type": "commonjs"`，因此 `.js` 插件保持 CommonJS 语义；
+> 框架通过 loader hook 强制 `.ts` 按 ESM 解析，因此 TypeScript 插件请直接使用 ESM 语法。
+> 想用 JavaScript 编写新版插件时，请使用 `.mjs` 扩展名。
 
-```
+## manifest.json
 
-/plugins/
-└── plugin-name/ # 插件目录
-├── manifest.json # 插件声明文件（必需）
-├── main.js # 主程序文件（必需）
-├── config.js # 配置文件（可选）
-└── other-files # 其他支持文件
-
-```
-
-## manifest.json 规范
+### api: 2（新版）
 
 ```json
 {
-  "name": "pluginObjectName",
+  "api": 2,
+  "name": "weather",
+  "version": "2.0.0",
+  "entry": "./main",
+  "author": "iYeXin"
+}
+```
+
+### api: 1（旧版）
+
+```json
+{
+  "name": "weatherPlugin",
   "version": 1.0,
   "mainExport": "./main",
-  "auther": "iYeXin", // 可选
-  "processingTypes": ["chat", "command", "default"]
+  "author": "iYeXin",
+  "processingTypes": ["天气", "/天气"]
 }
 ```
 
-### 字段说明
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `api` | Number | 否 | `1`（缺省）或 `2` |
+| `name` | String | 是 | 插件名称（api: 1 必须与导出的插件对象同名） |
+| `version` | String/Number | 否 | 版本号 |
+| `entry` | String | api: 2 必填 | 入口文件相对路径（api: 2 推荐） |
+| `mainExport` | String | api: 1 必填 | 入口文件相对路径，缺省 `"./main"`；两种 API 都识别该字段 |
+| `author` | String | 否 | 作者（兼容旧拼写 `auther`） |
+| `processingTypes` | Array | api: 1 必填 | 处理的消息类型，`"default"` 表示兜底处理所有消息 |
 
-| 字段名          | 类型   | 必填 | 描述                                                                |
-| --------------- | ------ | ---- | ------------------------------------------------------------------- |
-| name            | String | 是   | 插件对象名称，必须与导出的插件对象名一致                            |
-| version         | Number | 是   | 插件版本号，用于版本管理                                            |
-| mainExport      | String | 是   | 插件主文件路径（相对于插件目录），如 `"./main"` 表示 `main.js` 文件 |
-| processingTypes | Array  | 是   | 插件处理的消息类型列表，可包含特殊值 `"default"` 表示默认处理器     |
+---
 
-### processingTypes 说明
+# api: 2 插件（推荐）
 
-- 注意：为了适配官方的指令配置，建议在声明时同时声明`"原始指令"`和`"/原始指令"`
-- 消息类型匹配是**大小写敏感**的
-- 当多个插件声明处理同一消息类型时，**后加载的插件会覆盖**先加载的插件
-- 特殊值 `"default"` 表示该插件将处理所有未被其他插件匹配的消息
+## 最小示例
 
-## 插件对象规范
-
-每个插件必须导出一个与 `manifest.json` 中 `name` 字段同名的对象，该对象应包含以下方法：
-
-### 必需方法：main()
-
-```javascript
-/**
- * 插件主处理方法
- * @param {string} msgType - 将传递消息类型（如 "天气"）
- * @param {string} msgContent - 将传递消息内容（消息类型之后的有效文本）
- * @param {string} senderOpenid - 发将传递送者的唯一标识符
- * @param {boolean} isPrivate -是否为私聊消息（true表示私聊，false表示群聊）
- * @returns {Promise<obiect>} 返回处理结果的Promise，结果应该为一个对象，包含`text`字段和`image`字段，text字段放置文本，image字段需放置Buffer类型图片或图片url（无图片返回不设置该字段）
- *
- * 旧版本插件仍可以返回一个字符串的Promise，将作为纯文本消息发送
- */
-async function main(msgType, msgContent, senderOpenid, isPrivate) {
-  // 插件处理逻辑
-  return { text: "文字消息", image: 图片二进制数据 或 图片url };
+```ts
+// plugins/hello/main.ts
+export function init(ctx) {
+  ctx.register('all', {
+    prefix: 'hello',
+    handler: (msg) => `你好，${msg.senderId}！`,
+  });
 }
 ```
 
-说明：你可以在`main方法`中进行任何逻辑处理，包括运算/调用外部 API 等
+`init(ctx)` 在插件加载时**立即被调用**，支持异步（`export default async function init(ctx)`）。导出方式可以是：
 
-### `main方法`返回值规范
+```ts
+export function init(ctx) {}        // 具名导出
+export default function (ctx) {}    // 默认导出
+```
 
-```javascript
+CommonJS 插件则可写 `module.exports = function (ctx) {}` 或 `module.exports = { init }`。
+
+## 注册消息处理器
+
+```ts
+ctx.register(scope, { groupId?, match?, prefix?, handler });
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `scope` | `'group'` \| `'private'` \| `'all'` | 群聊 / 私聊 / 全部 |
+| `groupId` | String / String[] | 可选，限定生效的群 |
+| `match` | RegExp | 可选，正则匹配整条消息 |
+| `prefix` | String | 可选，前缀匹配 |
+| `handler` | `(msg) => 结果消息 \| Promise<结果消息>` | 处理函数 |
+
+`match` 与 `prefix` 都不填时，该处理器会接收对应作用域的**全部消息**（可用于记录日志等，返回 `null` 即不回复，也不会阻断其他处理器）。
+
+快捷写法：
+
+```ts
+ctx.onGroup({ prefix: '天气', handler });   // 等价于 ctx.register('group', ...)
+ctx.onPrivate({ prefix: '天气', handler }); // 等价于 ctx.register('private', ...)
+```
+
+## handler 收到的消息对象
+
+```ts
 {
-  text: "这是回复的文本",
-  image: Buffer 或 字符串类型的url // 该属性可选
+  content: string;     // 消息全文（已去除首尾空白）
+  text: string;        // 有效文本：prefix 模式下为去掉前缀后的内容，其余等于 content
+  messageId: string;   // 消息 ID
+  groupId?: string;    // 群 ID（仅群聊）
+  senderId: string;    // 发送者 openid
+  isPrivate: boolean;  // 是否私聊
+  match?: RegExpMatchArray; // 使用 match 注册时的匹配结果
+  prefix?: string;     // 使用 prefix 注册时命中的前缀
 }
 ```
 
-### 可选方法：init()
+## handler 的返回值
 
-```javascript
-/**
- * 插件初始化方法（可选）
- * 在插件加载时自动调用，用于执行初始化操作
- */
-async function init() {
-  console.log("插件初始化完成");
-}
+```ts
+// 1. 纯文本
+return '你好';
+
+// 2. 文本 + 图片（image 可以是 Buffer，也可以是图片 URL 字符串）
+return { text: '今天的天气', image: buffer };
+
+// 3. 不回复（继续尝试后续处理器 / 旧版插件）
+return null;
 ```
 
-### 可选方法：cleanup()
+## 上下文 ctx
 
-```javascript
-/**
- * 插件清理方法（可选）
- * 在插件卸载时自动调用，用于释放资源
- */
-async function cleanup() {
-  console.log("插件清理完成");
-}
-```
-
-## 插件上下文
-
-插件可在插件对象中通过 `this.ctx` 访问共享资源：
-
-```javascript
-// this.ctx
+```ts
 {
-  utils: {
-    md2html, // Markdown转HTML  传入markdown字符串，返回HTML字符串
-    html2img, // HTML转图片   传入HTML字符串，返回buffer类型图片
-    md2img,   // Markdown直接转图片   传入markdown字符串，返回buffer类型图片
-  }
+  api: 2,
+  util: {
+    markdownToHTML(markdown, options?): string,        // Markdown -> HTML 字符串
+    image: {
+      withMarkdown(markdown, options?): Promise<Buffer>, // Markdown -> 图片
+      withHTML(html, options?): Promise<Buffer>,         // HTML -> 图片
+    },
+  },
+  logger,      // logger.info(module, message, ...args) / error / warn / debug
+  manifest,    // 当前插件的 manifest 内容
+  dir,         // 当前插件目录的绝对路径
+  register(scope, registration),
+  onGroup(registration),
+  onPrivate(registration),
+  onUnload(callback),  // 插件重载或框架退出时调用
 }
 ```
 
-### 图片生成工具详解
+图片渲染选项：
 
-#### 1. md2html(markdownText, options)
+- `withMarkdown(md, { mdOptions?, imgOptions? })`
+- `withHTML(html, { width?, height?, quality?, type?, fullPage?, transparent?, deviceScaleFactor?, timeout?, waitFor? })`
 
-将 Markdown 转换为 HTML
+默认值：`width: 450`、`type: 'png'`、`fullPage: true`、`deviceScaleFactor: 2`、`quality: 90`、`timeout: 30000`。
 
-- `markdownText`: Markdown 格式文本
-- `options`: 配置选项（可选）
-  - `html`: 允许 HTML 标签（默认 true）
-  - `linkify`: 自动转换 URL 为链接（默认 true）
-  - `typographer`: 启用印刷替换（默认 true）
-  - `plugins`: 要加载的 markdown-it 插件数组
+## 完整示例
 
-#### 2. html2img(htmlContent, options)
+```ts
+// plugins/weather/main.ts
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-将 HTML 转换为图片
+export function init(ctx) {
+  // 只处理指定群
+  ctx.onGroup({
+    groupId: '9A1B2C3D4E',
+    prefix: '天气',
+    handler: async (msg) => {
+      if (!msg.text) return '用法：天气 城市名';
+      const data = await queryWeather(msg.text);
+      return { text: '查询结果', image: await ctx.util.image.withMarkdown(data) };
+    },
+  });
 
-- `htmlContent`: HTML 内容
-- `options`: 配置选项（可选）
-  - `width`: 图片宽度（默认 450，移动端友好）
-  - `height`: 图片高度（可选）
-  - `quality`: 图片质量（1-100，默认 90）
-  - `type`: 图片格式（'png' 或 'jpeg'，默认 'png'）
-  - `fullPage`: 是否截取整个页面（默认 true）
-  - `transparent`: 是否透明背景（默认 false）
-  - `timeout`: 操作超时时间（毫秒，默认 30000）
-  - `waitFor`: 额外等待时间（毫秒，默认 0）
+  // 正则匹配：任意纯数字消息
+  ctx.register('all', {
+    match: /^\d+$/,
+    handler: (msg) => `你发送了数字 ${msg.content}`,
+  });
 
-#### 3. md2img(markdownText, options)
+  // 私聊
+  ctx.onPrivate({
+    prefix: '帮助',
+    handler: () => ctx.util.markdownToHTML('# 帮助\n发送`天气 城市`查询天气'),
+  });
 
-将 Markdown 直接转换为图片
+  ctx.onUnload(() => {
+    ctx.logger.info('weather', '插件已卸载');
+  });
+}
+```
 
-- `markdownText`: Markdown 格式文本
-- `options`: 配置选项（可选）
-  - `mdOptions`: md2html 的配置
-  - `imgOptions`: html2img 的配置
+## 分发顺序
 
-#### 4. 样式说明
+1. **api: 2 处理器**按注册顺序依次执行，**第一个返回非空结果**的处理器生效并结束分发
+2. 返回 `null` / `undefined` / 空字符串不会阻断后续处理器
+3. 没有任何 api: 2 处理器响应时，回退到 **api: 1 插件**（按消息类型匹配，最后交给 `default` 插件）
 
-Markdown 转换默认使用类 GitHub 暗色主题样式，开发者可自行通过 HTML 进行配置
+---
 
-### Chrome 支持要求
+# api: 1 插件（旧版，保持兼容）
 
-- 图片生成功能需要系统安装 **Chrome 浏览器**
-- 支持 Windows/macOS/Linux 系统
-- 自动检测安装路径，也可通过 `CHROME_PATH` 环境变量指定
+无需 `api` 字段。插件导出一个与 `manifest.name` 同名的对象：
 
-## 完整插件示例
-
-### 文本插件示例
-
-```javascript
-// main.js
-const config = require("./config");
+```js
+// plugins/hello/main.js (CommonJS，照旧可用)
+const config = require('./config');
 
 module.exports = {
-  pluginObjectName: {
+  helloPlugin: {
     async init() {
-      console.log(`[${config.PLUGIN_NAME}] 初始化`);
+      console.log('初始化');
     },
 
     async main(msgType, msgContent, senderOpenid, isPrivate) {
-      console.log(
-        `收到${isPrivate ? "私聊" : "群聊"}消息: ${msgType} - ${msgContent}`
-      );
-      return `已处理${isPrivate ? "私聊" : "群聊"}消息: ${msgContent}`;
+      return `已处理${isPrivate ? '私聊' : '群聊'}消息: ${msgContent}`;
     },
 
     async cleanup() {
-      console.log(`[${config.PLUGIN_NAME}] 清理资源`);
+      console.log('清理资源');
     },
   },
 };
 ```
 
-### 图片生成插件示例
+- 消息格式：`@bot <消息类型> <消息内容>`（群聊）或 `<消息类型> <消息内容>`（私聊）
+- 返回值：字符串（纯文本）或 `{ text, image }` 对象
+- 上下文：`this.ctx.utils.md2html` / `html2img` / `md2img`、`this.ctx.logger`
 
-```javascript
-// chart-plugin/main.js
-module.exports = {
-  chartPlugin: {
-    async main(_, content) {
-      try {
-        // 生成图表SVG
-        const chartSVG = generateChart(content);
+---
 
-        // 转换SVG为图片
-        const imgBuffer = await this.ctx.utils.html2img(
-          `<div style="background:white;padding:20px">${chartSVG}</div>`,
-          { width: 800 }
-        );
+# 通用机制
 
-        return {
-          text: "数据分析结果：",
-          image: imgBuffer,
-        };
-      } catch (error) {
-        return "图表生成失败：" + error.message;
-      }
-    },
-  },
-};
-```
+## 热重载
 
-### Markdown 转图片插件示例
+`plugins` 目录发生变化（新增/修改插件目录，或放入 ZIP 包）时，框架会在 1 秒防抖后自动重载全部插件；重载前会依次执行 api: 2 的 `onUnload` 回调与 api: 1 插件的 `cleanup()`。
 
-```javascript
-// markdown-plugin/main.js
-module.exports = {
-  markdownPlugin: {
-    async main(_, markdownContent) {
-      try {
-        // 使用上下文工具转换Markdown
-        const imgBuffer = await this.ctx.utils.md2img(markdownContent, {
-          imgOptions: { width: 600 },
-        });
+## ZIP 插件包
 
-        return {
-          text: "转换结果：",
-          image: imgBuffer,
-        };
-      } catch (error) {
-        return "转换失败：" + error.message;
-      }
-    },
-  },
-};
-```
-
-## 消息处理流程
-
-1. 用户发送消息：`@bot <msgType> <msgContent>`(群聊)或`<msgType> <msgContent>`(私聊)
-2. 主程序解析出消息类型 (`msgType`) 和内容 (`msgContent`)
-3. 根据 `msgType` 查找匹配的插件
-4. 调用插件对象的 `main()` 方法
-5. 插件处理完成后返回回复对象
-6. 主程序将回复消息发送给群聊/用户
-
-## 插件包封装
-
-插件包采用`zip`格式，开发者需要将插件目录整体作为`zip包`中的内容（如下）
+把插件目录整体打包，**zip 内必须且只能有一个顶级目录**：
 
 ```
-my-plugin.zip/
-  └── my-plugin/          # 插件目录
-        ├── manifest.json   # 插件声明文件（必需）
-        ├── main.js         # 主程序文件（必需）
-        ├── config.js       # 配置文件（可选）
-        └── other-files     # 其他支持文件
+my-plugin.zip
+└── my-plugin/
+    ├── manifest.json
+    └── main.ts
 ```
 
-**不支持**以下结构
+把 zip 直接放进 `plugins/` 目录，框架会自动解压、安装并删除 zip（已存在的同名插件目录会被备份为 `<目录名>_<时间戳>`）。
 
-```
-my-plugin.zip/
-├── manifest.json   # 插件声明文件（必需）
-├── main.js   # 主程序文件（必需）
-├── config.js   # 配置文件（可选）
-└── other-files   # 其他支持文件
-```
+## TypeScript 插件
+
+- 直接写 `.ts` 即可，无需编译
+- 框架使用 Node 的类型剥离运行，因此**请勿使用** `enum`、`namespace`、构造函数参数属性等需要代码转换的语法；类型导入请写 `import type { ... } from '...'`
+- 可从框架引用类型（仅类型层面，运行时会被擦除）：
+
+  ```ts
+  import type { PluginContextV2 } from '../../src/types/index.ts';
+
+  export function init(ctx: PluginContextV2): void {
+    ctx.onGroup({ prefix: 'hi', handler: () => '你好' });
+  }
+  ```
 
 ## 最佳实践
 
-### 通用建议
-
-1. **错误处理**：
-
-   ```javascript
-   async main(msgType, msgContent, senderOpenid) {
-     try {
-       // 业务逻辑
-     } catch (error) {
-       console.error("处理失败:", error);
-       return "处理消息时出错，请稍后再试";
-     }
-   }
-   ```
-
-2. **配置管理**：
-
-   - 使用单独的 `config.js` 文件管理配置
-   - 避免在代码中硬编码敏感信息
-
-3. **状态管理**：
-
-   - 框架目前不提供通用的状态管理能力，插件可通过 `用户id` 和 `isPrivate` 自行实现
-
-4. **资源管理**：
-   - 在 `init()` 中初始化资源
-   - 在 `cleanup()` 中释放资源
-   - 使用异步方法处理耗时操作
-
-### 图片生成建议
-
-1. **性能优化**：
-
-   ```javascript
-   // 使用缓存提高图片生成性能
-   const imageCache = new Map();
-
-   async main(_, content) {
-     if (imageCache.has(content)) {
-       return {
-         text: "缓存结果",
-         image: imageCache.get(content)
-       };
-     }
-
-     const newImage = await generateImage(content);
-     imageCache.set(content, newImage);
-     return { text: "新生成", image: newImage };
-   }
-   ```
-
-2. **轻量化处理**：
-
-   ```javascript
-   // 直接使用远程 URL代替 Buffer
-   async main() {
-     const imageUrl = "https://example.com/pre-generated-image.png";
-     return {
-       text: "图片结果",
-       image: imageUrl
-     };
-   }
-   ```
-
-3. **内容精简**：
-   - 避免生成过大的图片（超过 1MB）
-   - 压缩图片质量：`{ quality: 80 }`
-   - 限制图片尺寸：`{ width: 800 }`
-
-## 插件开发示例
-
-### 1. 创建插件目录
-
-```
-mkdir plugins/hello-plugin
-```
-
-### 2. 添加声明文件 (manifest.json)
-
-```json
-{
-  "name": "helloPlugin",
-  "version": 1.0,
-  "mainExport": "./main",
-  "processingTypes": ["hello", "hi"]
-}
-```
-
-### 3. 创建主程序 (main.js)
-
-```javascript
-// main.js
-module.exports = {
-  helloPlugin: {
-    async main(msgType, msgContent, senderOpenid, isPrivate) {
-      return `你好，${senderOpenid}！你在${
-        isPrivate ? "私聊" : "群聊"
-      }中说了: ${msgContent}`;
-    },
-  },
-};
-```
-
-### 4. 创建图片插件 (main.js)
-
-```javascript
-// image-plugin/main.js
-module.exports = {
-  imagePlugin: {
-    async main() {
-      // 生成动态图片
-      const imgBuffer = await generateDynamicImage();
-
-      return {
-        text: "这是为您生成的图片：",
-        image: imgBuffer,
-      };
-    },
-  },
-};
-```
-
-### 5. 使用插件
-
-用户发送：
-
-```
-@bot hello 这是一条测试消息
-```
-
-机器人回复：
-
-```
-你好，user-openid！你在群聊中说了: 这是一条测试消息
-```
-
-用户发送：
-
-```
-@bot image 生成风景图
-```
-
-机器人回复：
-
-```
-这是为您生成的图片：[图片]
-```
+1. **错误兜底**：在 handler 内部 try/catch，返回友好文案；未捕获的异常会被框架记录并跳过该处理器
+2. **避免超大图片**：控制 `width`，必要时使用 `type: 'jpeg'` + `quality`
+3. **使用远程 URL**：能直接拿到图片链接时返回 URL 字符串，省去上传开销
+4. **资源释放**：用 `ctx.onUnload()`（api: 2）或 `cleanup()`（api: 1）释放定时器、连接等
+5. **配置外置**：密钥等写入独立的 `config.ts` / `config.json`，不要硬编码
