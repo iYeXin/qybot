@@ -1,51 +1,56 @@
+import type { QQApi } from '../api/index.ts';
 import { md2html } from '../image/markdown.ts';
 import { html2img, md2img } from '../image/render.ts';
 import type { HandlerRegistry } from './registry.ts';
 import { logger } from './logger.ts';
 import type {
-  HandlerRegistration,
+  InteractionHandlerOptions,
+  MessageHandlerOptions,
   MessageScope,
   PluginContext,
-  PluginContextV2,
   PluginManifest,
+  PluginUtils,
 } from '../types/index.ts';
 
-/** 创建 api: 1（旧版）插件的共享上下文 */
-export function createPluginContextV1(): PluginContext {
-  return {
-    utils: { md2html, html2img, md2img },
-    logger,
-  };
-}
+/** 插件可用工具集 */
+export const pluginUtils: PluginUtils = {
+  markdownToHTML: md2html,
+  image: {
+    withMarkdown: md2img,
+    withHTML: html2img,
+  },
+};
 
 /**
- * 创建 api: 2 插件的上下文
- * 每个插件独享一份，register / onUnload 均与该插件绑定
+ * 创建插件上下文
+ * 每个插件独享一份，注册与卸载回调都与该插件绑定
  */
-export function createPluginContextV2(
-  manifest: PluginManifest,
-  dir: string,
-  registry: HandlerRegistry
-): PluginContextV2 {
-  const register = (scope: MessageScope, registration: HandlerRegistration): void => {
-    registry.add(scope, registration);
+export function createPluginContext(options: {
+  manifest: PluginManifest;
+  dir: string;
+  registry: HandlerRegistry;
+  api: QQApi;
+}): PluginContext {
+  const { manifest, dir, registry, api } = options;
+
+  const onMessage = (scope: MessageScope, registration: MessageHandlerOptions): void => {
+    registry.addMessage(scope, registration);
+  };
+
+  const onInteraction = (registration: InteractionHandlerOptions): void => {
+    registry.addInteraction(registration);
   };
 
   return {
-    api: 2,
-    util: {
-      markdownToHTML: md2html,
-      image: {
-        withMarkdown: md2img,
-        withHTML: html2img,
-      },
-    },
     logger,
     manifest,
     dir,
-    register,
-    onGroup: (registration) => register('group', registration),
-    onPrivate: (registration) => register('private', registration),
+    api,
+    util: pluginUtils,
+
+    onMessage,
+    on: (event, handler) => registry.addEvent(Array.isArray(event) ? event : [event], handler),
+    onInteraction,
     onUnload: (callback) => registry.onUnload(callback),
   };
 }

@@ -1,74 +1,79 @@
-import WebSocket from 'ws';
-import {
-  botSendImageMessage,
-  botSendMessage,
-  getAccessToken,
-  getWsLink,
-  sendPrivateImageMessage,
-  sendPrivateMessage,
-  uploadImage,
-  uploadImageForPrivate,
-} from '../api/qq.ts';
-import { img2Url } from '../image/upload.ts';
-import { closeBrowserPool } from '../image/browser.ts';
+import { botConfig } from '../config.ts';
+import { QQApi, TokenManager } from '../api/index.ts';
+import { intentsForEvents, resolveIntents } from './intents.ts';
+import { createGatewayUrlFetcher, Gateway, type GatewayEvent } from './gateway.ts';
+import { HandlerRegistry, type MatchResult } from './registry.ts';
 import { logger } from './logger.ts';
 import { PluginManager } from './plugin-manager.ts';
+import type { MessageTarget } from '../api/message.ts';
 import type {
-  IncomingMessage,
-  PluginContext,
-  PluginResult,
-  PluginResultObject,
+  EventContext,
+  InteractionContext,
+  InteractionEventData,
+  MessageContent,
+  MessageContext,
+  MessageEventData,
+  SentMessage,
 } from '../types/index.ts';
 
-/** 连接重置周期：1 小时 */
-const RESET_INTERVAL = 60 * 60 * 1000;
+/** 被动回复次数上限（群聊 5 次 / 单聊 4 次） */
+const REPLY_LIMIT: Record<string, number> = { group: 5, user: 4 };
 
-/** WebSocket 收到的消息体 */
-interface WsEvent {
-  op: number;
-  t?: string;
-  s?: number;
-  d?: {
-    content?: string;
-    id?: string;
-    group_openid?: string;
-    author?: { id?: string };
-    heartbeat_interval?: number;
-    session_id?: string;
-  };
-}
+/** msg_seq 记录的清理周期 */
+const SEQ_TTL = 60 * 60 * 1000;
 
-/** QQ 机器人主类 */
+/** 支持用 event_id 被动回复的事件 */
+const REPLYABLE_EVENTS = new Set([
+  'INTERACTION_CREATE',
+  'GROUP_ADD_ROBOT',
+  'GROUP_MSG_RECEIVE',
+  'C2C_MSG_RECEIVE',
+  'FRIEND_ADD',
+]);
+
+/** QQ 机器人主类：插件加载 + 网关事件分发 + 消息收发 */
 export class QQBot {
-  private heartbeatInterval = 0;
-  private expiresIn = 0;
-  private sessionId: string | null = null;
-  private seq = 0;
-  private restoreLink = false;
-  private accessToken: string | null = null;
-  private isConnecting = false;
-  private isShuttingDown = false;
-
-  private heartbeatTimer: NodeJS.Timeout | null = null;
-  private tokenRefreshTimer: NodeJS.Timeout | null = null;
-  private connectionResetTimer: NodeJS.Timeout | null = null;
-  private ws: WebSocket | null = null;
-
+  readonly api: QQApi;
+  private readonly token: TokenManager;
+  private readonly registry = new HandlerRegistry();
   private readonly pluginManager: PluginManager;
+  private readonly seqMap = new Map<string, { count: number; at: number }>();
+  private gateway: Gateway | null = null;
+  private isShuttingDown = false;
+  private lastIntents: number | null = null;
 
-  constructor(context: PluginContext) {
-    this.pluginManager = new PluginManager(context);
-
-    process.on('uncaughtException', (error: Error) => {
-      logger.error('CRASH', `未捕获异常: ${error.stack ?? error.message}`);
-      this.safeResetConnection();
+  constructor() {
+    this.token = new TokenManager();
+    this.api = new QQApi(this.token);
+    this.pluginManager = new PluginManager(this.registry, this.api, undefined, {
+      onReloaded: () => this.handlePluginsReloaded(),
     });
   }
 
-  /** 注册进程退出信号（由入口调用） */
+  /** 注册退出信号 */
   registerSignals(): void {
     process.on('SIGINT', () => void this.shutdown());
     process.on('SIGTERM', () => void this.shutdown());
+  }
+
+  /** 启动：加载插件 -> 连接网关 */
+  async start(): Promise<void> {
+    await this.pluginManager.loadPlugins();
+    this.pluginManager.startWatching();
+    this.lastIntents = this.currentIntents();
+
+    this.gateway = new Gateway({
+      tokenProvider: () => this.token.get(),
+      fetchGatewayUrl: createGatewayUrlFetcher(this.api.client),
+      getIntents: () => this.currentIntents(),
+      onEvent: (event) => void this.handleEvent(event),
+      onFatal: (message) => {
+        logger.error('BOT', `网关不可恢复错误：${message}`);
+        process.exit(1);
+      },
+    });
+
+    await this.gateway.connect();
   }
 
   /** 安全关闭 */
@@ -77,355 +82,337 @@ export class QQBot {
     this.isShuttingDown = true;
 
     logger.info('BOT', '开始关闭机器人...');
-
-    this.cleanupResources();
-    await this.pluginManager.cleanup();
+    this.gateway?.close();
     this.pluginManager.stopWatching();
-    await closeBrowserPool();
+    await this.pluginManager.cleanup();
 
     logger.info('BOT', '机器人已安全关闭');
     process.exit(0);
   }
 
-  /** 初始化：加载插件 + 建立连接 */
-  async init(): Promise<void> {
-    if (this.isConnecting) {
-      logger.warn('BOT', '连接已在进行中，跳过重复连接');
-      return;
-    }
+  /** 当前 intents：配置优先，否则按插件注册的事件自动计算 */
+  private currentIntents(): number {
+    const configured = resolveIntents(botConfig.intents);
+    if (configured !== undefined) return configured;
 
-    this.isConnecting = true;
+    const events = this.registry.requiredEvents();
+    const computed = intentsForEvents(events);
+    logger.debug('BOT', `自动计算 intents=${computed} (${events.join(', ') || '无注册事件'})`);
+    return computed;
+  }
+
+  /** 插件热重载后：订阅变化时重新鉴权，使新 intents 生效 */
+  private handlePluginsReloaded(): void {
+    const next = this.currentIntents();
+    if (this.gateway && this.lastIntents !== null && next !== this.lastIntents) {
+      logger.info('BOT', `事件订阅变化（${this.lastIntents} -> ${next}），重新鉴权`);
+      this.gateway.reidentify();
+    }
+    this.lastIntents = next;
+  }
+
+  /** 处理网关事件 */
+  private async handleEvent(event: GatewayEvent): Promise<void> {
+    const type = event.t;
+    if (!type) return;
 
     try {
-      logger.info('BOT', '开始初始化机器人...');
-
-      await this.pluginManager.loadPlugins();
-      this.pluginManager.startWatching();
-
-      await this.setupConnection();
-      this.scheduleConnectionReset();
-
-      logger.info('BOT', '机器人初始化完成');
-    } catch (error) {
-      logger.error('BOT', `初始化失败: ${(error as Error).message}`);
-      this.safeResetConnection(5000);
-    } finally {
-      this.isConnecting = false;
-    }
-  }
-
-  /** 建立 WebSocket 连接 */
-  private async setupConnection(): Promise<void> {
-    await this.anewGetAccessToken();
-    const wsLinkData = await getWsLink(this.accessToken ?? '');
-    logger.info('WS', `获取WS链接: ${wsLinkData.url}`);
-
-    // 关闭现有连接
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN) this.ws.close();
-      this.ws = null;
-    }
-
-    this.ws = new WebSocket(wsLinkData.url);
-    this.ws.on('open', () => this.handleOpen());
-    this.ws.on('message', (data: WebSocket.RawData) => this.handleMessage(data));
-    this.ws.on('close', () => this.handleClose());
-    this.ws.on('error', (error: Error) => this.handleError(error));
-  }
-
-  /** 连接建立：发送鉴权或恢复会话 */
-  private handleOpen(): void {
-    logger.info('WS', '连接成功');
-
-    if (this.restoreLink) {
-      logger.debug('WS', `发送恢复连接请求 seq: ${this.seq + 1}`);
-      this.ws?.send(
-        JSON.stringify({
-          op: 6,
-          d: { token: `QQBot ${this.accessToken}`, session_id: this.sessionId, seq: this.seq + 1 },
-        })
-      );
-      this.restoreLink = false;
-      return;
-    }
-
-    this.sendSession(`QQBot ${this.accessToken}`);
-  }
-
-  /** 处理收到的消息 */
-  private handleMessage(data: WebSocket.RawData): void {
-    try {
-      const ev = JSON.parse(data.toString()) as WsEvent;
-
-      logger.debug(
-        'WS',
-        `收到消息: ${JSON.stringify({
-          op: ev.op,
-          t: ev.t,
-          s: ev.s,
-          d: ev.d
-            ? {
-                heartbeat_interval: ev.d.heartbeat_interval,
-                session_id: ev.d.session_id,
-                content: ev.d.content ? `${ev.d.content.substring(0, 50)}...` : undefined,
-              }
-            : undefined,
-        })}`
-      );
-
-      if (ev.d?.content) {
-        void this.processMessages(
-          ev.d.content,
-          ev.d.id ?? '',
-          ev.d.group_openid ?? '',
-          ev.d.author?.id ?? ''
-        );
-      }
-
-      if (ev.d?.heartbeat_interval) {
-        this.heartbeatInterval = ev.d.heartbeat_interval;
-        logger.debug('WS', `设置心跳周期: ${this.heartbeatInterval}ms`);
-      }
-
-      if (ev.s) {
-        this.seq = ev.s;
-        logger.debug('WS', `更新序列号: ${this.seq}`);
-      }
-
-      if (ev.t === 'READY') {
-        this.sessionId = ev.d?.session_id ?? null;
-        logger.info('WS', `获取Session ID: ${this.sessionId}`);
-        this.sendHeartbeat();
-      }
-
-      // 重连指令
-      if (ev.op === 7 || ev.op === 9) {
-        logger.info('WS', '收到重连指令');
-        this.safeResetConnection();
+      switch (type) {
+        case 'GROUP_AT_MESSAGE_CREATE':
+          await this.handleMessage('at', event);
+          break;
+        case 'GROUP_MESSAGE_CREATE':
+          await this.handleMessage('group', event);
+          break;
+        case 'C2C_MESSAGE_CREATE':
+          await this.handleMessage('c2c', event);
+          break;
+        case 'INTERACTION_CREATE':
+          await this.handleInteraction(event);
+          break;
+        default:
+          await this.handleGenericEvent(type, event);
+          break;
       }
     } catch (error) {
-      logger.error('WS', '消息解析失败:', error);
+      logger.error('BOT', `事件 ${type} 处理失败: ${(error as Error).message}`);
     }
   }
 
-  private handleClose(): void {
-    logger.warn('WS', '连接关闭，尝试重连...');
-    this.safeResetConnection(3000);
-  }
+  /** 处理消息事件 */
+  private async handleMessage(
+    kind: 'at' | 'group' | 'c2c',
+    event: GatewayEvent
+  ): Promise<void> {
+    const data = (event.d ?? {}) as MessageEventData;
+    const content = (data.content ?? '').trim();
+    // 纯图片/卡片/引用消息可能没有文本，但带有附件或结构化数据，仍需分发
+    const hasPayload =
+      content !== '' ||
+      (data.attachments?.length ?? 0) > 0 ||
+      data.ark_data !== undefined ||
+      (data.msg_elements?.length ?? 0) > 0;
+    if (!hasPayload) return;
 
-  private handleError(error: Error): void {
-    logger.error('WS', `连接错误: ${error.message}`);
-    this.safeResetConnection(5000);
-  }
+    const isGroup = kind !== 'c2c';
+    logger.info(
+      'MSG',
+      `收到 [${isGroup ? (kind === 'at' ? '群@' : '群消息') : '单聊'}] ${
+        data.group_openid ?? data.author?.id ?? '-'
+      }: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`
+    );
 
-  /** 安全重置连接 */
-  private safeResetConnection(delay = 0): void {
-    if (this.isShuttingDown) return;
-
-    logger.warn('BOT', `安全重置连接${delay ? ` (${delay}ms后)` : ''}`);
-    this.cleanupResources();
-
-    setTimeout(() => {
-      this.restoreLink = true;
-      this.init().catch((error: Error) => {
-        logger.error('BOT', `重连失败: ${error.message}`);
-        this.safeResetConnection(10000);
-      });
-    }, delay);
-  }
-
-  /** 清理定时器与连接 */
-  private cleanupResources(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-
-    if (this.tokenRefreshTimer) {
-      clearTimeout(this.tokenRefreshTimer);
-      this.tokenRefreshTimer = null;
-    }
-
-    if (this.connectionResetTimer) {
-      clearTimeout(this.connectionResetTimer);
-      this.connectionResetTimer = null;
-    }
-
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN) this.ws.close();
-      this.ws = null;
-    }
-  }
-
-  /** 定期重置连接 */
-  private scheduleConnectionReset(): void {
-    this.connectionResetTimer = setTimeout(() => {
-      logger.info('BOT', '定期连接重置');
-      this.safeResetConnection();
-    }, RESET_INTERVAL);
-
-    logger.debug('BOT', `已安排 ${RESET_INTERVAL / 60000} 分钟后重置连接`);
-  }
-
-  /** 开始发送心跳 */
-  private sendHeartbeat(): void {
-    this.ws?.send(JSON.stringify({ op: 1, d: null }));
-    logger.debug('HEARTBEAT', '发送首次心跳');
-
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-
-    this.heartbeatTimer = setInterval(() => {
-      this.ws?.send(JSON.stringify({ op: 1, d: this.seq }));
-      logger.debug('HEARTBEAT', `发送心跳 (seq: ${this.seq})`);
-    }, this.heartbeatInterval);
-  }
-
-  /** 发送鉴权 */
-  private sendSession(token: string): void {
-    logger.debug('AUTH', '发送鉴权请求');
-    this.ws?.send(
-      JSON.stringify({
-        op: 2,
-        d: {
-          token,
-          intents: 0 | (1 << 25),
-          shard: [0, 1],
-          properties: {},
-        },
-      })
+    await this.registry.dispatchMessage(kind, content, data.group_openid, (extra) =>
+      this.createMessageContext(event.t ?? '', data, extra, event.id)
     );
   }
 
-  /** 获取（并定时刷新）访问令牌 */
-  private async anewGetAccessToken(): Promise<void> {
-    try {
-      logger.info('TOKEN', '获取访问令牌...');
-      const data = await getAccessToken();
+  /** 处理互动事件 */
+  private async handleInteraction(event: GatewayEvent): Promise<void> {
+    const data = (event.d ?? {}) as InteractionEventData;
+    const interactionId = data.id;
+    if (!interactionId) return;
 
-      if (!data?.access_token) {
-        throw new Error('获取Token失败：响应中缺少 access_token');
-      }
+    logger.info('MSG', `收到互动事件 type=${data.type} scene=${data.scene}`);
 
-      this.accessToken = data.access_token;
+    let responded = false;
+    const context = this.createInteractionContext(
+      data,
+      event.id,
+      () => {
+        responded = true;
+      },
+      () => responded
+    );
 
-      // 接口未提供有效有效期时使用 2 小时兜底，避免 NaN 导致的立即重试风暴
-      const expiresIn = Number(data.expires_in);
-      const valid = Number.isFinite(expiresIn) && expiresIn > 0;
+    await this.registry.dispatchInteraction(data.type, () => context);
 
-      this.expiresIn = valid ? expiresIn * 1000 : 7200 * 1000;
-      if (!valid) logger.warn('TOKEN', '响应未提供有效有效期，使用默认值 7200 秒');
-
-      logger.info('TOKEN', '获取Token成功');
-      logger.debug('TOKEN', `有效期: ${Math.floor(this.expiresIn / 1000)}秒`);
-
-      if (this.tokenRefreshTimer) clearTimeout(this.tokenRefreshTimer);
-
-      const refreshTime = this.expiresIn - 60000; // 提前 1 分钟刷新
-      this.tokenRefreshTimer = setTimeout(() => {
-        logger.info('TOKEN', '刷新访问令牌');
-        void this.anewGetAccessToken();
-      }, refreshTime);
-
-      logger.debug('TOKEN', `安排 ${Math.floor(refreshTime / 1000)} 秒后刷新令牌`);
-    } catch (error) {
-      logger.error('TOKEN', `获取Token失败: ${(error as Error).message}`);
-      throw error;
+    // 按钮回调(type=11)与快捷菜单(type=12)必须回应，否则客户端一直 loading
+    const needsResponse = data.type === 11 || data.type === 12;
+    if (needsResponse && !responded) {
+      await this.api.message.respondInteraction(interactionId).catch((error: Error) => {
+        logger.warn('MSG', `互动回应失败: ${error.message}`);
+      });
     }
   }
 
-  /** 解析并分发消息，随后回复 */
-  private async processMessages(
-    msg: string,
-    id: string,
-    groupId: string,
-    senderOpenid: string
-  ): Promise<void> {
-    try {
-      const isPrivate = !groupId;
-      logger.info(
-        'MSG',
-        `收到 [${isPrivate ? '私聊' : '群聊'}] 消息 [${senderOpenid}]: ${msg.substring(0, 50)}${
-          msg.length > 50 ? '...' : ''
-        }`
-      );
+  /** 处理其它事件 */
+  private async handleGenericEvent(type: string, event: GatewayEvent): Promise<void> {
+    logger.debug('EVENT', `${type} -> ${JSON.stringify(event.d ?? {})}`);
+    await this.registry.dispatchEvent(type, () => this.createEventContext(type, event));
+  }
 
-      const content = msg.replace(/^\s+/, '').trim();
+  /** 构造消息上下文 */
+  private createMessageContext(
+    event: string,
+    data: MessageEventData,
+    extra: MatchResult,
+    eventId?: string
+  ): MessageContext {
+    const isGroup = event !== 'C2C_MESSAGE_CREATE';
+    const groupOpenid = data.group_openid;
+    const memberOpenid = data.author?.member_openid ?? (isGroup ? data.author?.id : undefined);
+    const userOpenid = data.author?.user_openid ?? (isGroup ? undefined : data.author?.id);
+    const targetId = isGroup ? groupOpenid : userOpenid;
 
-      if (!content) {
-        logger.warn('MSG', '无法解析消息格式');
-        return;
-      }
+    const target: MessageTarget = {
+      scene: isGroup ? 'group' : 'user',
+      id: targetId ?? '',
+    };
 
-      const incoming: IncomingMessage = {
-        content,
-        text: content,
-        messageId: id,
-        groupId: groupId || undefined,
-        senderId: senderOpenid,
-        isPrivate,
-      };
+    const canReply = Boolean(target.id);
 
-      const retMsg = await this.pluginManager.dispatchMessage(incoming);
+    return {
+      event,
+      content: (data.content ?? '').trim(),
+      text: extra.text,
+      ...(extra.match ? { match: extra.match } : {}),
+      ...(extra.prefix ? { prefix: extra.prefix } : {}),
+      ...(data.id ? { messageId: data.id } : {}),
+      ...(eventId ? { eventId } : {}),
+      ...(groupOpenid ? { groupOpenid } : {}),
+      senderId: (isGroup ? memberOpenid : userOpenid) ?? data.author?.id ?? '',
+      ...(userOpenid ? { userOpenid } : {}),
+      ...(memberOpenid ? { memberOpenid } : {}),
+      ...(data.author?.username ? { nickname: data.author.username } : {}),
+      ...(data.author?.member_role ? { memberRole: data.author.member_role } : {}),
+      isGroup,
+      isPrivate: !isGroup,
+      ...(data.timestamp ? { timestamp: data.timestamp } : {}),
+      ...(data.message_type !== undefined ? { messageType: data.message_type } : {}),
+      ...(data.message_scene ? { messageScene: data.message_scene } : {}),
+      ...(data.attachments ? { attachments: data.attachments } : {}),
+      ...(data.mentions ? { mentions: data.mentions } : {}),
+      ...(data.ark_data ? { arkData: data.ark_data } : {}),
+      ...(data.msg_elements ? { msgElements: data.msg_elements } : {}),
+      raw: data,
 
-      if (!retMsg) return;
-      await this.sendReply(retMsg, { id, groupId, senderOpenid, isPrivate });
-    } catch (error) {
-      logger.error('MSG', `消息处理失败: ${(error as Error).message}`);
+      reply: (content: MessageContent): Promise<SentMessage[]> =>
+        canReply ? this.replyTo(target, content, data.id) : Promise.resolve([]),
+      send: (content: MessageContent): Promise<SentMessage[]> =>
+        canReply ? this.api.message.send(target, content) : Promise.resolve([]),
+      api: this.api,
+      logger,
+    };
+  }
+
+  /** 构造事件上下文 */
+  private createEventContext(type: string, event: GatewayEvent): EventContext {
+    const data = event.d ?? {};
+    const target = this.eventTarget(data);
+
+    return {
+      event: type,
+      ...(event.id ? { eventId: event.id } : {}),
+      data,
+      ...(this.eventTimestamp(data) !== undefined ? { timestamp: this.eventTimestamp(data) } : {}),
+      ...(target && REPLYABLE_EVENTS.has(type)
+        ? { reply: (content: MessageContent) => this.replyEvent(target, content, event.id) }
+        : {}),
+      api: this.api,
+      logger,
+    };
+  }
+
+  /** 构造互动上下文 */
+  private createInteractionContext(
+    data: InteractionEventData,
+    eventId: string | undefined,
+    markResponded: () => void,
+    isResponded: () => boolean
+  ): InteractionContext {
+    const interactionId = data.id ?? '';
+    const isGroup = data.scene === 'group';
+    const target: MessageTarget | undefined =
+      data.group_openid || data.user_openid
+        ? {
+            scene: isGroup ? 'group' : 'user',
+            id: (isGroup ? data.group_openid : data.user_openid) ?? '',
+          }
+        : undefined;
+
+    return {
+      id: interactionId,
+      ...(data.type !== undefined ? { type: data.type } : {}),
+      ...(data.scene ? { scene: data.scene } : {}),
+      ...(data.chat_type !== undefined ? { chatType: data.chat_type } : {}),
+      ...(data.data?.resolved?.button_data ? { buttonData: data.data.resolved.button_data } : {}),
+      ...(data.data?.resolved?.button_id ? { buttonId: data.data.resolved.button_id } : {}),
+      ...(data.data?.resolved?.message_id ? { messageId: data.data.resolved.message_id } : {}),
+      ...(data.group_openid ? { groupOpenid: data.group_openid } : {}),
+      ...(data.user_openid ? { userOpenid: data.user_openid } : {}),
+      ...(data.group_member_openid ? { memberOpenid: data.group_member_openid } : {}),
+      ...(data.guild_id ? { guildId: data.guild_id } : {}),
+      ...(data.channel_id ? { channelId: data.channel_id } : {}),
+      ...(data.timestamp ? { timestamp: data.timestamp } : {}),
+      ...(eventId ? { eventId } : {}),
+      raw: data,
+
+      respond: async (code = 0): Promise<void> => {
+        // 同一 interaction_id 只能回应一次；多处理器场景下重复调用直接跳过
+        if (isResponded()) {
+          logger.debug('MSG', `互动 ${interactionId} 已回应，跳过重复回应`);
+          return;
+        }
+        markResponded();
+        await this.api.message.respondInteraction(interactionId, code);
+      },
+      reply: (content: MessageContent): Promise<SentMessage[]> =>
+        target ? this.replyEvent(target, content, eventId) : Promise.resolve([]),
+      api: this.api,
+      logger,
+    };
+  }
+
+  /**
+   * 被动回复消息（自动维护 msg_seq，拆条时后续各条自动递增并预占序号）
+   * 同一条消息的被动回复次数超限后，自动降级为主动消息发出。
+   */
+  private async replyTo(
+    target: MessageTarget,
+    content: MessageContent,
+    messageId?: string
+  ): Promise<SentMessage[]> {
+    if (!messageId) return await this.api.message.send(target, content);
+
+    const limit = REPLY_LIMIT[target.scene] ?? 5;
+    const key = `msg:${messageId}`;
+    if (this.peekSeq(key) > limit) {
+      logger.info('MSG', `被动回复次数已达上限（${limit} 次），转为主动消息发送`);
+      return await this.api.message.send(target, content);
+    }
+
+    const seq = this.nextSeq(key);
+    const results = await this.api.message.send(target, content, { msgId: messageId, seq });
+    // 文本+图片等拆条发送占用了多个序号，预占避免下一次复用导致去重失败
+    if (results.length > 1) {
+      this.seqMap.set(key, { count: seq + results.length - 1, at: Date.now() });
+    }
+    return results;
+  }
+
+  /**
+   * 用事件 ID 被动回复（自动维护 msg_seq，超限后自动降级为主动消息）
+   */
+  private replyEvent(
+    target: MessageTarget,
+    content: MessageContent,
+    eventId?: string
+  ): Promise<SentMessage[]> {
+    if (!eventId) return this.api.message.send(target, content);
+
+    const limit = REPLY_LIMIT[target.scene] ?? 5;
+    const key = `evt:${eventId}`;
+    if (this.peekSeq(key) > limit) {
+      logger.info('MSG', `事件被动回复次数已达上限（${limit} 次），转为主动消息发送`);
+      return this.api.message.send(target, content);
+    }
+
+    const seq = this.nextSeq(key);
+    return this.api.message.send(target, content, { eventId, seq });
+  }
+
+  /** 查看下一个 msg_seq（不推进计数器） */
+  private peekSeq(key: string): number {
+    this.pruneSeq();
+    return (this.seqMap.get(key)?.count ?? 0) + 1;
+  }
+
+  /** 递增并返回 msg_seq */
+  private nextSeq(key: string): number {
+    this.pruneSeq();
+    const record = this.seqMap.get(key);
+    const count = (record?.count ?? 0) + 1;
+    this.seqMap.set(key, { count, at: Date.now() });
+    return count;
+  }
+
+  /** 清理过期的 msg_seq 记录 */
+  private pruneSeq(): void {
+    if (this.seqMap.size < 500) return;
+    const now = Date.now();
+    for (const [key, value] of this.seqMap) {
+      if (now - value.at > SEQ_TTL) this.seqMap.delete(key);
     }
   }
 
-  /** 回复消息（文本 / 图文） */
-  private async sendReply(
-    retMsg: PluginResult,
-    target: { id: string; groupId: string; senderOpenid: string; isPrivate: boolean }
-  ): Promise<void> {
-    const { id, groupId, senderOpenid, isPrivate } = target;
-    const token = this.accessToken ?? '';
+  /** 从事件数据推断回复目标 */
+  private eventTarget(data: unknown): MessageTarget | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const payload = data as Record<string, unknown>;
 
-    // 旧版插件：直接返回字符串
-    if (typeof retMsg === 'string') {
-      if (!retMsg.trim()) return;
-      if (isPrivate) {
-        await sendPrivateMessage(token, retMsg, id, senderOpenid);
-        logger.info('MSG', '发送私聊文本回复');
-      } else {
-        await botSendMessage(token, retMsg, id, groupId);
-        logger.info('MSG', '发送群聊文本回复');
-      }
-      return;
-    }
+    const groupOpenid = typeof payload.group_openid === 'string' ? payload.group_openid : undefined;
+    if (groupOpenid) return { scene: 'group', id: groupOpenid };
 
-    const result = retMsg as PluginResultObject;
+    const openid = typeof payload.openid === 'string' ? payload.openid : undefined;
+    if (openid) return { scene: 'user', id: openid };
 
-    // 新版插件：文本 + 图片
-    if (result.image) {
-      const url = typeof result.image === 'string' ? result.image : await img2Url(result.image);
-      logger.debug('IMG', '图片URL获取成功');
+    return undefined;
+  }
 
-      if (isPrivate) {
-        const fileinfo = await uploadImageForPrivate(token, url, senderOpenid);
-        logger.debug('IMG', '私聊图片fileinfo获取成功');
-        await sendPrivateImageMessage(token, result.text ?? '', fileinfo, id, senderOpenid);
-        logger.info('MSG', '发送私聊图片回复');
-      } else {
-        const fileinfo = await uploadImage(token, url, groupId);
-        logger.debug('IMG', '群聊图片fileinfo获取成功');
-        await botSendImageMessage(token, result.text ?? '', fileinfo, id, groupId);
-        logger.info('MSG', '发送群聊图片回复');
-      }
-      return;
-    }
-
-    if (result.text) {
-      if (isPrivate) {
-        await sendPrivateMessage(token, result.text, id, senderOpenid);
-        logger.info('MSG', '发送私聊文本回复');
-      } else {
-        await botSendMessage(token, result.text, id, groupId);
-        logger.info('MSG', '发送群聊文本回复');
-      }
-    }
+  private eventTimestamp(data: unknown): string | number | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const value = (data as Record<string, unknown>).timestamp;
+    return typeof value === 'string' || typeof value === 'number' ? value : undefined;
   }
 }

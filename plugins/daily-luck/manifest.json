@@ -1,9 +1,0 @@
-{
-  "name": "dailyLuckPlugin",
-  "version": 1.0,
-  "mainExport": "./main",
-  "processingTypes": [
-    "今日人品",
-    "/今日人品"
-  ]
-}

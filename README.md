@@ -1,41 +1,30 @@
 # QYbot - 轻量级 QQ 机器人框架
 
-QYbot 是一个接入 QQ 官方机器人的轻量级、模块化 QQ 机器人框架。2.0 版本使用 **TypeScript + ESM** 重写主体，由 Node 直接运行 TypeScript（无需编译步骤），并提供了全新一代插件 API（同时完整兼容旧插件）。
+QYbot 是接入 QQ 官方机器人的轻量级、模块化框架。3.0 版本针对 **QQ 开放平台 V2 API** 重写了连接、鉴权与消息链路，插件 API 重构为 `init(ctx)` 事件式模型。
 
-## 2.0 版本变化
+> 3.0 是**不兼容更新**：不再支持旧版插件 API（`processingTypes` / `main()`）与 CommonJS 插件。
 
-| 项目 | 1.x | 2.0 |
+## 3.0 变化速览
+
+| 项目 | 2.x | 3.0 |
 | --- | --- | --- |
-| 主体语言 | JavaScript (CommonJS) | **TypeScript (ESM)**，Node 直接运行 |
-| Node 要求 | 无明确要求 | **>= 22.18.0** |
-| 图片渲染 | puppeteer-core + 手动定位 Chrome | **playwright-core**，自动尝试系统 Chrome / Edge |
-| 插件 API | `processingTypes` + `main()` | 新增 **`api: 2`**（`ctx.register` 事件式），`api: 1` 旧插件继续可用 |
-| 插件语言 | JavaScript (CJS) | **TypeScript / JavaScript，ESM 或 CommonJS** |
-| 网关地址 | 区分沙箱环境 | 统一 `api.sgroup.qq.com/gateway`（平台新政策） |
-
-## 核心特性
-
-- **双插件 API** - 新版 `api: 2`（推荐）与旧版 `api: 1`（零改动兼容）可共存
-- **原生 TypeScript** - 插件可直接用 `.ts` 编写，无需构建
-- **图文混合回复** - 支持文本 + 图片组合消息
-- **自动浏览器探测** - 依次尝试系统 Chrome / Edge，失败信息完整汇总
-- **插件热重载** - 插件目录或 ZIP 包变更时自动重载
-- **插件市场** - [QYbot 插件市场](https://market.qybot.yexin.wiki/)
+| 开放平台接口 | `api.sgroup.qq.com`（部分 `/v2` 端点） | 统一 `api.bot.qq.com`，全量 V2 端点 |
+| 网关 | 简单重连 | 完整网关状态机：Hello / Identify / Resume / 心跳看门狗 / 错误码恢复策略 |
+| 鉴权 | 手动刷新 token | `TokenManager` 自动获取 + 提前刷新 + 并发去重 + 401 自动重试 |
+| 错误处理 | 依赖 HTTP 状态码 | 统一解析 `err_code` / `trace_id`，抛出 `QQApiError` |
+| intents | 硬编码 `1 << 25` | 按插件注册的事件**自动计算**（可手动覆盖） |
+| 消息能力 | 文本 + 图片 | 文本 / **Markdown** / **富媒体（分片上传）** / **按钮 keyboard** / **流式消息** / 撤回 / 引用 / 主动推送 |
+| 事件 | 仅消息 | 群消息（含**全量群消息**）、单聊、进群退群、成员增减、入群申请、好友、互动回调… |
+| 群管理 | 无 | 成员、黑名单、禁言、入群审批、自动审批策略 |
+| 频道 | 无 | 频道/子频道读写、指令面板、自定义菜单 |
+| 插件 | `api: 2`，ESM/CJS 均可 | `api: 3`，**仅 ESM**，`init(ctx)` + `ctx.onXxx` |
 
 ## 环境要求
 
-- **Node.js >= 22.18.0**（用于直接运行 TypeScript，无需 `tsc` 编译）
-- 可选：系统安装 **Chrome 或 Edge**（仅图片渲染功能需要）
+- **Node.js >= 22.18.0**（直接运行 TypeScript，无需编译）
+- 可选：系统安装 Chrome 或 Edge（仅图片渲染功能需要）
 
 ## 快速开始
-
-### 1. 准备机器人
-
-1. 在 [QQ 开放平台](https://q.qq.com/) 注册并创建机器人
-2. 获取 `AppId` 与 `AppSecret`
-3. 在机器人管理端配置好可被 @ 的群 / 私聊权限
-
-### 2. 安装与配置
 
 ```bash
 git clone https://github.com/iYeXin/qybot
@@ -47,98 +36,102 @@ npm install
 
 ```ts
 export const botConfig: BotConfig = {
-  appId: 'xxxxxxx', // 替换为你的 AppId
-  secret: 'xxxxxxx', // 替换为你的 AppSecret
-  imageServer: 'https://market.qybot.yexin.wiki/upload-image/', // 图片上传接口
-  browser: {
-    channel: [], // 留空 = 自动探测 Chrome / Edge
-    executablePath: '', // 或手动指定浏览器路径
-  },
+  appId: 'xxxxxxx', // 开放平台获取的 AppId
+  secret: 'xxxxxxx', // 开放平台获取的 AppSecret
+  apiBase: 'https://api.bot.qq.com',
+  // intents 不填：框架按插件注册的事件自动计算
 };
 ```
 
-> `sandBox` 字段已废弃：QQ 开放平台新政策下不再区分沙箱/正式环境，统一使用 `api.sgroup.qq.com/gateway`。
-
-[imageServer 接口规范](./imageServer.md)
-
-### 3. 启动
+启动：
 
 ```bash
-npm start        # 等价于 node src/main.ts
-npm run typecheck # 可选：类型检查
+npm start          # node src/main.ts
+npm run typecheck  # 类型检查
 ```
 
-Windows 用户也可双击 `start.bat`。
-
-成功启动后会看到：
-
-```
-[2026-08-30 18:20:00] [INFO] [BOT] QYbot v2.0.0 启动中 (Node 22.18.0)
-[2026-08-30 18:20:00] [INFO] [PLUGIN] 插件加载完成，共加载 3 个插件
-[2026-08-30 18:20:01] [INFO] [WS] 连接成功
-```
+Windows 可双击 `start.bat`。
 
 ## 目录结构
 
 ```
-qybot/
-├── src/                      # 框架主体（TypeScript / ESM）
-│   ├── main.ts               # 入口
-│   ├── config.ts             # 机器人配置
-│   ├── types/index.ts        # 公共类型（插件可引用）
-│   ├── core/
-│   │   ├── bot.ts            # QQ 机器人主类（连接、心跳、消息分发）
-│   │   ├── plugin-manager.ts # 插件加载 / 热重载 / 分发
-│   │   ├── plugin-loader.ts  # 模块解析（TS/JS、ESM/CJS 兼容）
-│   │   ├── registry.ts       # api: 2 消息处理器注册中心
-│   │   ├── context.ts        # 插件上下文构造
-│   │   ├── logger.ts         # 日志
-│   │   └── paths.ts          # 路径常量
-│   ├── api/
-│   │   ├── http.ts           # 统一请求实例
-│   │   └── qq.ts             # QQ 官方接口封装
-│   └── image/
-│       ├── browser.ts        # playwright-core 浏览器池
-│       ├── markdown.ts       # Markdown -> HTML
-│       ├── render.ts         # HTML/Markdown -> 图片
-│       └── upload.ts         # 图片 Buffer -> URL
-├── plugins/                  # 插件目录
-│   ├── package.json          # 声明插件目录为 CommonJS，保证旧插件可用
-│   └── hello-api2/           # api: 2 插件示例（TypeScript / ESM）
-├── tsconfig.json
-└── package.json
+src/
+├── main.ts              入口（Node 版本校验、异常兜底）
+├── config.ts            机器人配置
+├── types/               公共类型（插件可 import type）
+├── core/
+│   ├── bot.ts           主类：网关事件 -> 插件分发 -> 消息回复
+│   ├── gateway.ts       WebSocket 网关（鉴权/心跳/Resume/重连）
+│   ├── intents.ts       intents 位定义与自动计算
+│   ├── registry.ts      处理器注册中心
+│   ├── context.ts       插件上下文构造
+│   ├── plugin-manager.ts 插件加载、ZIP 安装、热重载
+│   ├── plugin-loader.ts  ESM 模块解析（TS/JS）
+│   ├── logger.ts  paths.ts
+├── api/
+│   ├── index.ts    QQApi 门面（ctx.api）
+│   ├── client.ts   HTTP 客户端（鉴权、err_code、重试、trace_id）
+│   ├── token.ts    access_token 自动管理
+│   ├── message.ts  消息发送/撤回/流式/互动回应
+│   ├── media.ts    富媒体上传（URL 直传 + 分片上传）
+│   ├── group.ts    群管理（成员/黑名单/禁言/入群审批）
+│   ├── bot.ts      机器人信息、分享链接
+│   ├── guild.ts    频道与子频道
+│   ├── panel.ts    指令面板、自定义菜单
+│   └── errors.ts   错误类型与网关错误码
+└── image/          playwright 图片渲染（browser/markdown/render）
 ```
 
-## 图片渲染
+## 核心能力
 
-图片由 `playwright-core` 渲染，启动时会按顺序尝试：
+### 消息
 
-1. `channel`: 系统自带的 **Chrome** → **Edge** → Playwright chromium
-2. `executablePath`: `CHROME_PATH` / `EDGE_PATH` 环境变量或 `botConfig.browser.executablePath`
-3. 各平台常见安装路径兜底
+- 文本（`msg_type=0`）、**Markdown**（`msg_type=2`）、**富媒体**（`msg_type=7`，自动分片上传 Buffer）
+- **消息按钮 keyboard**（最多 5 行 × 5 列），按钮回调自动/手动回应
+- **单聊流式消息**（`ctx.api.message.sendStream`）
+- 引用回复、撤回（2 分钟内）、「输入中」状态
+- 被动回复自动维护 `msg_seq`（群 5 次 / 单聊 4 次上限提醒）
+- **主动消息**：不传 `msg_id`/`event_id` 即为主动推送；单聊支持 `is_wakeup` 互动召回
 
-每种方式失败都会被捕获并记录，全部失败时抛出汇总错误（列出每种方式的失败原因），不会中断机器人运行。浏览器实例会被复用，空闲 30 秒后自动关闭。
+### 事件
+
+群 @ 消息、群**全量消息**（平台侧开启「接收所有消息」后）、单聊消息、机器人进/退群、群成员增减、入群申请、好友增删、主动消息开关、互动回调、频道与子频道事件。
+
+### 群管理 / 频道
+
+成员列表与详情、批量移除、黑名单、禁言、入群审批与自动审批策略；频道详情、子频道增删改查、指令面板、自定义菜单。
+
+### 图片渲染
+
+`playwright-core` 自动尝试系统 Chrome → Edge → Playwright chromium，再尝试 `CHROME_PATH` / 配置路径 / 各平台常见路径；每种失败都会被捕获记录，全部失败时汇总报错。实例复用，空闲 30s 关闭。
 
 ## 插件开发
 
-- **新版插件（推荐）**：见 [plugins.md - api: 2](./plugins.md)
-- **旧版插件**：无需任何改动即可继续使用，见 [plugins.md - api: 1](./plugins.md)
+见 [plugins.md](./plugins.md)。最小示例：
+
+```ts
+// plugins/hello/main.ts
+export function init(ctx) {
+  ctx.onMessage('all', { prefix: 'hello', handler: (msg) => `你好，${msg.senderId}！` });
+}
+```
+
+## 从 2.x 升级
+
+1. 插件 manifest 改为 `{"api": 3, "name": "...", "entry": "./main"}`
+2. 入口改为 ESM（`export function init(ctx)`），移除 `processingTypes` 与 `main()`
+3. 用 `ctx.onMessage(scope, opts) / on / onInteraction` 注册处理器（`scope` 为 `'at'` / `'group'` / `'c2c'` / `'all'`）
+4. 旧的 CJS 插件（`require` / `module.exports`）需改写为 ESM
 
 ## 常见问题
 
-### 提示 Node 版本过低
+**提示 Node 版本过低** — 升级到 Node >= 22.18.0。
 
-升级到 Node >= 22.18.0（该版本起默认开启 TypeScript 类型剥离，可直接运行 `.ts`）。
+**网关 4014 / 无权限** — 机器人未申请对应事件权限，或减少注册的事件类型；手动指定 `botConfig.intents` 可绕过自动计算。
 
-### 图片生成失败
+**收不到全量群消息** — `GROUP_MESSAGE_CREATE` 需在开放平台为机器人开启「接收所有消息」（群侧 `recv_msg_setting=all`）。
 
-查看日志中 `浏览器启动失败 (...)` 的记录，确认本机已安装 Chrome 或 Edge；也可通过 `CHROME_PATH` 环境变量或 `botConfig.browser.executablePath` 手动指定，或在 `botConfig.browser.channel` 中指定优先尝试的通道。
-
-### 从 1.x 升级
-
-1. 把 `app.js` 中的配置迁移到 `src/config.ts`
-2. 删除旧的 `main.js` / `api.js` / `image.js` / `toImg.js`（已被 `src/` 取代）
-3. `plugins/` 目录无需改动
+**图片渲染失败** — 查看日志中的 `浏览器启动失败 (...)`，或手动指定 `botConfig.browser.executablePath` / `CHROME_PATH`。
 
 ## 许可证
 

@@ -9,55 +9,59 @@ import {
   watch,
   type FSWatcher,
 } from 'node:fs';
-import { extname, join } from 'node:path';
-import { PLUGINS_DIR } from './paths.ts';
+import { join } from 'node:path';
+import type { QQApi } from '../api/index.ts';
+import { createPluginContext } from './context.ts';
 import { logger } from './logger.ts';
-import { createPluginContextV2 } from './context.ts';
-import { HandlerRegistry } from './registry.ts';
+import { PLUGINS_DIR } from './paths.ts';
 import {
   importFresh,
   pickInitExport,
-  pickPluginExport,
   readManifest,
   registerPluginModuleHooks,
   resolvePluginEntry,
 } from './plugin-loader.ts';
-import type {
-  IncomingMessage,
-  PluginContext,
-  PluginInstance,
-  PluginManifest,
-  PluginResult,
-} from '../types/index.ts';
+import type { HandlerRegistry } from './registry.ts';
 
-/** 需要忽略的目录名（隐藏目录 / 依赖目录等） */
+/** 需要忽略的目录 */
 const IGNORED_DIRS = new Set(['node_modules', '.git']);
 
-/** 判断入口文件是 ESM 还是 CommonJS（仅用于日志） */
-function moduleFlavor(entry: string): string {
-  return ['.mjs', '.mts', '.ts'].includes(extname(entry)) ? 'ESM' : 'CommonJS';
-}
-
-/** 插件管理器 */
+/**
+ * 插件管理器
+ *
+ * 插件一律为 ESM（.ts / .mts / .mjs / .js），入口导出 init(ctx)，
+ * 通过 ctx 注册消息/事件处理器。不再支持旧版 processingTypes 与 CommonJS 插件。
+ */
 export class PluginManager {
-  private readonly plugins = new Map<string, PluginInstance>();
-  private readonly registry = new HandlerRegistry();
+  private readonly registry: HandlerRegistry;
+  private readonly api: QQApi;
   private readonly pluginDir: string;
-  private readonly context: PluginContext;
-  private defaultPlugin: PluginInstance | null = null;
   private watcher: FSWatcher | null = null;
   private reloadDebounce: NodeJS.Timeout | null = null;
   private isLoading = false;
+  private loadedCount = 0;
 
-  constructor(context: PluginContext, pluginDir: string = PLUGINS_DIR) {
-    this.context = context;
+  private readonly onReloaded?: () => void;
+
+  constructor(
+    registry: HandlerRegistry,
+    api: QQApi,
+    pluginDir: string = PLUGINS_DIR,
+    options: { onReloaded?: () => void } = {}
+  ) {
+    this.registry = registry;
+    this.api = api;
     this.pluginDir = pluginDir;
-
-    // 固定 plugins 目录下 .ts 文件的模块类型为 ESM
+    this.onReloaded = options.onReloaded;
     registerPluginModuleHooks(this.pluginDir);
   }
 
-  /** 解压插件 ZIP 包（放入 plugins 目录后自动安装） */
+  /** 已加载的插件数量 */
+  get count(): number {
+    return this.loadedCount;
+  }
+
+  /** 解压插件 ZIP 包（放入 plugins 目录即自动安装） */
   private extractPlugins(): void {
     try {
       if (!existsSync(this.pluginDir)) {
@@ -90,7 +94,6 @@ export class PluginManager {
           const pluginDirName = [...topLevelDirs][0];
           const targetDir = join(this.pluginDir, pluginDirName);
 
-          // 解压前备份已存在的插件
           if (existsSync(targetDir)) {
             const backupDir = `${targetDir}_${Date.now()}`;
             logger.plugin('PLUGIN', `插件目录已存在, 备份到: ${backupDir}`);
@@ -99,9 +102,8 @@ export class PluginManager {
 
           logger.plugin('PLUGIN', `解压到: ${targetDir}`);
           zip.extractAllTo(this.pluginDir, true);
-
           unlinkSync(zipPath);
-          logger.plugin('PLUGIN', `已删除ZIP文件: ${zipFile}`);
+          logger.plugin('PLUGIN', `已安装: ${pluginDirName}`);
         } catch (error) {
           logger.error('PLUGIN', `解压失败: ${zipFile}`, error);
         }
@@ -124,21 +126,17 @@ export class PluginManager {
     try {
       this.extractPlugins();
 
+      // 卸载旧插件：执行 onUnload 并清空处理器
       await this.cleanup();
-      this.plugins.clear();
-      this.defaultPlugin = null;
 
-      if (!existsSync(this.pluginDir)) {
-        mkdirSync(this.pluginDir, { recursive: true });
-        return;
-      }
+      if (!existsSync(this.pluginDir)) mkdirSync(this.pluginDir, { recursive: true });
 
       const pluginDirs = readdirSync(this.pluginDir, { withFileTypes: true })
         .filter((dirent) => dirent.isDirectory())
         .map((dirent) => dirent.name)
         .filter((name) => !name.startsWith('.') && !IGNORED_DIRS.has(name));
 
-      let loadedCount = 0;
+      let loaded = 0;
 
       for (const dir of pluginDirs) {
         const pluginDir = join(this.pluginDir, dir);
@@ -151,7 +149,7 @@ export class PluginManager {
 
         try {
           const manifest = readManifest(manifestPath);
-          const entryFile = manifest.entry ?? manifest.mainExport;
+          const entryFile = manifest.entry ?? './main';
           const entry = resolvePluginEntry(pluginDir, entryFile);
 
           if (!entry) {
@@ -160,21 +158,30 @@ export class PluginManager {
           }
 
           const moduleNamespace = await importFresh(entry);
-          const loaded =
-            manifest.api === 2
-              ? await this.loadApi2Plugin(manifest, pluginDir, moduleNamespace)
-              : await this.loadApi1Plugin(manifest, moduleNamespace);
+          const init = pickInitExport(moduleNamespace);
 
-          if (!loaded) continue;
+          if (!init) {
+            logger.warn('PLUGIN', `${manifest.name} 未导出 init 函数`);
+            continue;
+          }
 
-          loadedCount++;
-          logger.debug('PLUGIN', `${manifest.name} <- ${entry} (${moduleFlavor(entry)})`);
+          const ctx = createPluginContext({
+            manifest,
+            dir: pluginDir,
+            registry: this.registry,
+            api: this.api,
+          });
+
+          await init(ctx);
+          loaded++;
+          logger.plugin('PLUGIN', `${manifest.name} 加载完成`);
         } catch (error) {
           logger.error('PLUGIN', `加载失败: ${dir}`, error);
         }
       }
 
-      logger.info('PLUGIN', `插件加载完成，共加载 ${loadedCount}/${pluginDirs.length} 个插件`);
+      this.loadedCount = loaded;
+      logger.info('PLUGIN', `插件加载完成，共加载 ${loaded}/${pluginDirs.length} 个插件`);
     } catch (error) {
       logger.error('PLUGIN', '插件加载失败:', error);
     } finally {
@@ -182,61 +189,7 @@ export class PluginManager {
     }
   }
 
-  /**
-   * 加载 api: 1（旧版）插件
-   * 插件导出与 manifest.name 同名的对象，通过 processingTypes 匹配消息
-   */
-  private async loadApi1Plugin(
-    manifest: PluginManifest,
-    moduleNamespace: unknown
-  ): Promise<boolean> {
-    const plugin = pickPluginExport(moduleNamespace, manifest.name);
-
-    if (!plugin) {
-      logger.warn('PLUGIN', `${manifest.name} 缺少 main 方法`);
-      return false;
-    }
-
-    // 注入上下文到插件对象
-    plugin.ctx = this.context;
-
-    for (const type of manifest.processingTypes) {
-      if (type === 'default') this.defaultPlugin = plugin;
-      else this.plugins.set(type, plugin);
-    }
-
-    if (typeof plugin.init === 'function') {
-      await plugin.init();
-      logger.plugin('PLUGIN', `${manifest.name} 初始化完成`);
-    }
-
-    return true;
-  }
-
-  /**
-   * 加载 api: 2 插件
-   * 插件导出 init(ctx)，由插件自行通过 ctx.register 注册消息处理器
-   */
-  private async loadApi2Plugin(
-    manifest: PluginManifest,
-    pluginDir: string,
-    moduleNamespace: unknown
-  ): Promise<boolean> {
-    const init = pickInitExport(moduleNamespace);
-
-    if (!init) {
-      logger.warn('PLUGIN', `${manifest.name} 未导出 init 函数 (api: 2 插件必需)`);
-      return false;
-    }
-
-    const ctx = createPluginContextV2(manifest, pluginDir, this.registry);
-    await init(ctx);
-    logger.plugin('PLUGIN', `${manifest.name} 初始化完成 (api: 2)`);
-
-    return true;
-  }
-
-  /** 启动插件目录监听（支持热重载） */
+  /** 启动插件目录监听（热重载） */
   startWatching(): void {
     if (this.watcher) return;
 
@@ -251,12 +204,11 @@ export class PluginManager {
 
         const isDirectory = statSync(filePath).isDirectory();
         const isZip = filename.endsWith('.zip');
-
         if (!isDirectory && !isZip) return;
 
         logger.info('PLUGIN', `检测到插件变更: ${eventType} ${filename}`);
-
         if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
+
         this.reloadDebounce = setTimeout(() => {
           void this.reloadPlugins();
         }, 1000);
@@ -276,85 +228,18 @@ export class PluginManager {
       logger.info('PLUGIN', '开始重新加载插件...');
       await this.loadPlugins();
       logger.info('PLUGIN', '插件重载完成');
+      this.onReloaded?.();
     } catch (error) {
       logger.error('PLUGIN', '插件重载失败:', error);
     }
   }
 
-  /**
-   * 分发消息
-   * 1. 先交给 api: 2 插件注册的处理器
-   * 2. 未命中时回退到 api: 1 插件（消息类型匹配 -> 默认插件）
-   */
-  async dispatchMessage(msg: IncomingMessage): Promise<PluginResult> {
-    const v2Result = await this.registry.dispatch(msg);
-    if (v2Result) return v2Result;
-
-    const match = /^(\S+)([\s\S]*)$/.exec(msg.content);
-    if (!match) return null;
-
-    return await this.processMessage(match[1], (match[2] ?? '').trim(), msg.senderId, msg.isPrivate);
-  }
-
-  /** 按消息类型分发给插件处理（api: 1） */
-  async processMessage(
-    msgType: string,
-    msgContent: string,
-    senderOpenid: string,
-    isPrivate: boolean
-  ): Promise<PluginResult> {
-    const plugin = this.plugins.get(msgType);
-
-    if (plugin) {
-      try {
-        return await plugin.main(msgType, msgContent, senderOpenid, isPrivate);
-      } catch (error) {
-        logger.error('PLUGIN', `${msgType}处理失败:`, error);
-        return '插件处理出错';
-      }
-    }
-
-    if (this.defaultPlugin) {
-      try {
-        return await this.defaultPlugin.main(msgType, msgContent, senderOpenid, isPrivate);
-      } catch (error) {
-        logger.error('PLUGIN', '默认插件处理失败:', error);
-      }
-    }
-
-    return null;
-  }
-
-  /** 执行 api: 2 插件的 onUnload 回调与 api: 1 插件的 cleanup 方法 */
+  /** 执行卸载回调并清空处理器 */
   async cleanup(): Promise<void> {
     logger.info('PLUGIN', '清理插件资源...');
-
-    // api: 2 插件的卸载回调
     await this.registry.runUnloadCallbacks();
-    this.registry.clearHandlers();
-
-    const cleanupOne = async (plugin: PluginInstance, name: string): Promise<void> => {
-      if (typeof plugin.cleanup !== 'function') return;
-      try {
-        await plugin.cleanup();
-        logger.debug('PLUGIN', `${name} 清理完成`);
-      } catch (error) {
-        logger.error('PLUGIN', `${name} 清理失败:`, error);
-      }
-    };
-
-    // 同一插件对象可能注册了多个消息类型，去重后只清理一次
-    const cleaned = new Set<PluginInstance>();
-
-    for (const [type, plugin] of this.plugins) {
-      if (cleaned.has(plugin)) continue;
-      cleaned.add(plugin);
-      await cleanupOne(plugin, type);
-    }
-
-    if (this.defaultPlugin && !cleaned.has(this.defaultPlugin)) {
-      await cleanupOne(this.defaultPlugin, '默认插件');
-    }
+    this.registry.clear();
+    this.loadedCount = 0;
   }
 
   /** 停止目录监听 */

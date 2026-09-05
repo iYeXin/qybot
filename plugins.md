@@ -1,307 +1,254 @@
-# QYbot 插件开发文档
+# QYbot 插件开发文档（api: 3）
 
-QYbot 的插件放在 `plugins/<插件目录>/` 下。框架支持两代插件 API，二者可以共存：
+插件放在 `plugins/<插件目录>/`，入口导出 `init(ctx)`，在插件加载时被调用。插件通过 `ctx` 注册消息/事件处理器、调用开放接口、使用图片工具。
 
-| | `api: 1`（旧版 / 缺省） | `api: 2`（新版，推荐） |
-| --- | --- | --- |
-| manifest | 需 `processingTypes`，入口字段 `mainExport` | 需 `"api": 2`，无需 `processingTypes`，入口字段 `entry` |
-| 入口导出 | 与 `name` 同名的插件对象（`main` / `init` / `cleanup`） | `init(ctx)` 函数（具名导出或默认导出） |
-| 消息匹配 | 消息的第一个词（消息类型） | `prefix` 前缀 / `match` 正则 / 群 ID 过滤 |
-| 注册方式 | 框架按 `processingTypes` 分发 | 插件主动 `ctx.register(...)` |
-| 图片工具 | `this.ctx.utils.md2img` 等 | `ctx.util.image.withMarkdown` 等 |
-| 卸载 | 插件对象的 `cleanup()` | `ctx.onUnload(cb)` |
+> 插件**必须是 ESM**（`export` / `import`）。支持 `.ts` / `.mts` / `.mjs` / `.js`（`.js` 也按 ESM 解析）。
+> 不再支持 `processingTypes`、插件对象 `main()` 与 CommonJS 的 `require` / `module.exports`。
 
-> **旧插件无需任何修改**，框架会自动按 `api: 1` 处理。
-
-## 插件市场
-
-你可以在 [QYbot 插件市场](https://market.qybot.yexin.wiki/) 寻找或上传插件。
-
-## 目录结构与文件类型
+## 目录结构
 
 ```
 plugins/
 └── my-plugin/
-    ├── manifest.json   # 插件声明（必需）
-    ├── main.ts         # 入口文件（必需，可以是 .ts/.mts/.mjs/.js）
-    ├── config.ts       # 其他文件（可选）
-    └── data.json
+    ├── manifest.json   # 必需
+    ├── main.ts         # 入口（推荐 TypeScript）
+    └── config.json     # 其他文件（可选）
 ```
 
-入口文件（`manifest.mainExport`）的解析规则：
-
-- 带扩展名时直接使用，例如 `"./main.mjs"`
-- 不带扩展名时按 **`.ts` → `.mts` → `.mjs` → `.js`** 的顺序探测
-
-模块类型规则：
-
-| 扩展名 | 模块类型 | 说明 |
-| --- | --- | --- |
-| `.ts` | **ESM** | 新版插件推荐，框架强制按 ESM 解析 |
-| `.mts` | **ESM** | TypeScript ESM |
-| `.mjs` | **ESM** | JavaScript ESM |
-| `.js` / `.cjs` | **CommonJS** | 兼容旧插件的 `require` / `module.exports` |
-
-**新插件请一律使用 ESM**（`export` / `import`），旧插件的 CommonJS 写法继续可用。
-
-> `plugins/package.json` 中声明了 `"type": "commonjs"`，因此 `.js` 插件保持 CommonJS 语义；
-> 框架通过 loader hook 强制 `.ts` 按 ESM 解析，因此 TypeScript 插件请直接使用 ESM 语法。
-> 想用 JavaScript 编写新版插件时，请使用 `.mjs` 扩展名。
+入口解析顺序：`.ts` → `.mts` → `.mjs` → `.js`。
 
 ## manifest.json
 
-### api: 2（新版）
-
 ```json
 {
-  "api": 2,
+  "api": 3,
   "name": "weather",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "entry": "./main",
   "author": "iYeXin"
 }
 ```
 
-### api: 1（旧版）
+| 字段      | 类型          | 必填 | 说明                        |
+| --------- | ------------- | ---- | --------------------------- |
+| `api`     | number        | 是   | 必须为 `3`                  |
+| `name`    | string        | 是   | 插件名称（用于日志）        |
+| `version` | string/number | 否   | 版本号                      |
+| `entry`   | string        | 否   | 入口文件路径，缺省 `./main` |
+| `author`  | string        | 否   | 作者                        |
 
-```json
-{
-  "name": "weatherPlugin",
-  "version": 1.0,
-  "mainExport": "./main",
-  "author": "iYeXin",
-  "processingTypes": ["天气", "/天气"]
+## 最小插件
+
+```ts
+import type { PluginContext } from '../../qybot.js';
+
+export function init(ctx: PluginContext) {
+  ctx.onMessage('all', { prefix: 'hello', handler: (msg) => `你好，${msg.senderId}！` });
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `api` | Number | 否 | `1`（缺省）或 `2` |
-| `name` | String | 是 | 插件名称（api: 1 必须与导出的插件对象同名） |
-| `version` | String/Number | 否 | 版本号 |
-| `entry` | String | api: 2 必填 | 入口文件相对路径（api: 2 推荐） |
-| `mainExport` | String | api: 1 必填 | 入口文件相对路径，缺省 `"./main"`；两种 API 都识别该字段 |
-| `author` | String | 否 | 作者（兼容旧拼写 `auther`） |
-| `processingTypes` | Array | api: 1 必填 | 处理的消息类型，`"default"` 表示兜底处理所有消息 |
+也支持默认导出：`export default function init(ctx) {}`（可 `async`）。
 
----
+> 仓库根目录的 `qybot.d.ts` 是插件的类型声明文件（以 `PluginContext` / `MessageContext` 为入口自动生成），
+> 用 `import type { ... } from '../../qybot.js'` 引用即可获得完整类型提示（路径按插件目录深度调整；`import type` 在运行时会被完全擦除，不影响加载）。
+> 框架更新后可用 `npm run build:types` 重新生成。
 
-# api: 2 插件（推荐）
+## 注册处理器
 
-## 最小示例
+| 方法                          | 说明                                               |
+| ----------------------------- | -------------------------------------------------- |
+| `ctx.onMessage(scope, opts)`  | 注册消息处理器                                     |
+| `ctx.on(event, handler)`      | 任意网关事件（支持数组）                           |
+| `ctx.onInteraction(opts)`     | 互动事件（按钮回调等），可按 `type` 过滤           |
+| `ctx.onUnload(cb)`            | 插件卸载/重载时回调                                |
 
-```ts
-// plugins/hello/main.ts
-export function init(ctx) {
-  ctx.register('all', {
-    prefix: 'hello',
-    handler: (msg) => `你好，${msg.senderId}！`,
-  });
-}
-```
+`scope` 取值：`'at'` 群内 @机器人（`GROUP_AT_MESSAGE_CREATE`）/ `'group'` 群全量消息（`GROUP_MESSAGE_CREATE`，需平台开启「接收所有消息」）/ `'c2c'` 单聊（`C2C_MESSAGE_CREATE`）/ `'all'` 全部。
 
-`init(ctx)` 在插件加载时**立即被调用**，支持异步（`export default async function init(ctx)`）。导出方式可以是：
+注册选项 `opts`：
 
-```ts
-export function init(ctx) {}        // 具名导出
-export default function (ctx) {}    // 默认导出
-```
+| 字段         | 类型               | 说明                                              |
+| ------------ | ------------------ | ------------------------------------------------- |
+| `groups`     | string \| string[] | 限定生效的群 OpenID（仅群消息有效）               |
+| `prefix`     | string \| string[] | 前缀匹配，命中后 `msg.text` 为去掉前缀的内容      |
+| `match`      | RegExp             | 正则匹配整条消息，匹配结果在 `msg.match`          |
+| `ignoreCase` | boolean            | 前缀是否忽略大小写，默认 false（match 请用 /i）   |
+| `handler`    | (msg) => 内容      | 处理函数，可为 async                              |
 
-CommonJS 插件则可写 `module.exports = function (ctx) {}` 或 `module.exports = { init }`。
+- `prefix` 与 `match` 互斥，同时传会在注册时直接抛错；都不填时接收该作用域的全部消息
+- `handler` 缺失、空 `prefix` / 空 `groups` 数组同样会在注册时抛错，而不是等到分发出错
 
-## 注册消息处理器
+**分发规则**：按注册顺序执行**所有命中**的处理器，每个返回非空结果的处理器都会回复一条；返回 `null` / `undefined` / 空串不回复，也不阻断后续处理器。单个处理器的异常或发送失败只跳过自己。
 
-```ts
-ctx.register(scope, { groupId?, match?, prefix?, handler });
-```
+> 同一条消息的被动回复次数超限（群 5 次 / 单聊 4 次）后，框架会自动去掉 `msg_id` / `event_id`，转为主动消息发出。
 
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `scope` | `'group'` \| `'private'` \| `'all'` | 群聊 / 私聊 / 全部 |
-| `groupId` | String / String[] | 可选，限定生效的群 |
-| `match` | RegExp | 可选，正则匹配整条消息 |
-| `prefix` | String | 可选，前缀匹配 |
-| `handler` | `(msg) => 结果消息 \| Promise<结果消息>` | 处理函数 |
-
-`match` 与 `prefix` 都不填时，该处理器会接收对应作用域的**全部消息**（可用于记录日志等，返回 `null` 即不回复，也不会阻断其他处理器）。
-
-快捷写法：
-
-```ts
-ctx.onGroup({ prefix: '天气', handler });   // 等价于 ctx.register('group', ...)
-ctx.onPrivate({ prefix: '天气', handler }); // 等价于 ctx.register('private', ...)
-```
-
-## handler 收到的消息对象
+## 消息上下文 `msg`
 
 ```ts
 {
-  content: string;     // 消息全文（已去除首尾空白）
-  text: string;        // 有效文本：prefix 模式下为去掉前缀后的内容，其余等于 content
-  messageId: string;   // 消息 ID
-  groupId?: string;    // 群 ID（仅群聊）
-  senderId: string;    // 发送者 openid
-  isPrivate: boolean;  // 是否私聊
-  match?: RegExpMatchArray; // 使用 match 注册时的匹配结果
-  prefix?: string;     // 使用 prefix 注册时命中的前缀
+  event,            // GROUP_AT_MESSAGE_CREATE / GROUP_MESSAGE_CREATE / C2C_MESSAGE_CREATE
+  content,          // 消息全文（群 @ 消息已去除 @ 前缀）
+  text,             // 有效文本（prefix 模式下为去掉前缀后的内容）
+  match, prefix,    // 匹配信息
+  messageId,        // 消息 ID（被动回复 / 撤回）
+  eventId,          // 事件 ID（事件被动回复）
+  groupOpenid,      // 群 OpenID
+  senderId,         // 发送者标识（群=member_openid，单聊=user_openid）
+  userOpenid, memberOpenid, nickname, memberRole,
+  isGroup, isPrivate,
+  timestamp, messageType, messageScene,
+  attachments,      // 图片/视频/语音/文件附件
+  mentions, arkData, msgElements,
+  raw,              // 原始事件数据
+
+  reply(content),   // 被动回复本条消息（自动维护 msg_seq）
+  send(content),    // 主动发送到当前会话
+  api, logger,
 }
 ```
 
-## handler 的返回值
+## 处理器返回值
 
 ```ts
-// 1. 纯文本
-return '你好';
+return '纯文本';
 
-// 2. 文本 + 图片（image 可以是 Buffer，也可以是图片 URL 字符串）
-return { text: '今天的天气', image: buffer };
-
-// 3. 不回复（继续尝试后续处理器 / 旧版插件）
-return null;
+return { text: '说明文字', image: buffer };      // image: Buffer 或图片 URL
+return { markdown: '# 标题\n**加粗**' };          // Markdown 消息
+return { markdown: {...}, keyboard: {...} };      // Markdown + 按钮
+return { text: 'hi', keyboard: {...} };           // 文本 + 按钮
+return null;                                      // 不回复
 ```
 
-## 上下文 ctx
+`image` 为 Buffer 时框架自动分片上传并发送富媒体；同时给 `text` 与 `image` 时会先发文本再发图片。
+
+- `text` 与 `markdown` 同时存在时只发送 Markdown（平台要求二者互斥）
+- 内容拆成多条时，被动回复的 `msg_seq` 会自动递增，无需手动处理
+- `msgSeq` / `wakeup` 也可直接写在返回值里（`wakeup` 仅单聊主动消息有效）
+- 若已在函数内手动 `reply`/`send`，请返回 `null`，否则自动回复会造成重复发送
+
+## 事件上下文 `event`
 
 ```ts
-{
-  api: 2,
+ctx.on('GROUP_ADD_ROBOT', (e) => '大家好！');      // 支持用 event_id 回复的事件
+ctx.on('FRIEND_ADD', (e) => { ctx.logger.info('x', e.data); });
+ctx.on(['GROUP_DEL_ROBOT', 'GROUP_MSG_REJECT'], (e) => { /* 清理状态 */ });
+```
+
+`e` 包含 `event` / `eventId` / `data` / `timestamp` / `api` / `logger`，支持回复的事件会带 `e.reply(content)`。
+
+支持事件被动回复的事件：`INTERACTION_CREATE`、`GROUP_ADD_ROBOT`、`GROUP_MSG_RECEIVE`（群）、`C2C_MSG_RECEIVE`、`FRIEND_ADD`（单聊）。
+
+> 不支持回复的事件（如 `GROUP_DEL_ROBOT`）即使返回内容也不会发送，框架会告警并继续尝试后续处理器。
+
+## 互动（按钮回调）
+
+```ts
+ctx.onInteraction({
+  type: 11,                   // 可选：只处理按钮回调，不填则接收全部互动事件
+  handler: async (i) => {
+    await i.respond();        // 必须回应，否则客户端一直 loading
+    return `你点击了 ${i.buttonData}`;
+  },
+});
+```
+
+`i` 包含 `id` / `type` / `scene` / `buttonData` / `buttonId` / `messageId` / `groupOpenid` / `userOpenid` / `memberOpenid` / `raw`，以及 `respond(code?)` 与 `reply(content)`。
+
+> `type=11`（按钮）与 `type=12`（快捷菜单）必须回应；若插件未回应，框架会自动补一次 `code=0`。
+
+## 上下文总览
+
+```ts
+ctx = {
+  logger,                 // logger.info(module, msg) / error / warn / debug
+  manifest,               // 插件声明内容
+  dir,                    // 插件目录绝对路径
+  api: {
+    message, media, group, bot, guild, panel, menu,
+    client,               // 底层 HTTP 客户端（未封装接口可自行调用）
+  },
   util: {
-    markdownToHTML(markdown, options?): string,        // Markdown -> HTML 字符串
-    image: {
-      withMarkdown(markdown, options?): Promise<Buffer>, // Markdown -> 图片
-      withHTML(html, options?): Promise<Buffer>,         // HTML -> 图片
-    },
+    markdownToHTML(md),
+    image: { withMarkdown(md, opts?), withHTML(html, opts?) },
   },
-  logger,      // logger.info(module, message, ...args) / error / warn / debug
-  manifest,    // 当前插件的 manifest 内容
-  dir,         // 当前插件目录的绝对路径
-  register(scope, registration),
-  onGroup(registration),
-  onPrivate(registration),
-  onUnload(callback),  // 插件重载或框架退出时调用
-}
-```
-
-图片渲染选项：
-
-- `withMarkdown(md, { mdOptions?, imgOptions? })`
-- `withHTML(html, { width?, height?, quality?, type?, fullPage?, transparent?, deviceScaleFactor?, timeout?, waitFor? })`
-
-默认值：`width: 450`、`type: 'png'`、`fullPage: true`、`deviceScaleFactor: 2`、`quality: 90`、`timeout: 30000`。
-
-## 完整示例
-
-```ts
-// plugins/weather/main.ts
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-export function init(ctx) {
-  // 只处理指定群
-  ctx.onGroup({
-    groupId: '9A1B2C3D4E',
-    prefix: '天气',
-    handler: async (msg) => {
-      if (!msg.text) return '用法：天气 城市名';
-      const data = await queryWeather(msg.text);
-      return { text: '查询结果', image: await ctx.util.image.withMarkdown(data) };
-    },
-  });
-
-  // 正则匹配：任意纯数字消息
-  ctx.register('all', {
-    match: /^\d+$/,
-    handler: (msg) => `你发送了数字 ${msg.content}`,
-  });
-
-  // 私聊
-  ctx.onPrivate({
-    prefix: '帮助',
-    handler: () => ctx.util.markdownToHTML('# 帮助\n发送`天气 城市`查询天气'),
-  });
-
-  ctx.onUnload(() => {
-    ctx.logger.info('weather', '插件已卸载');
-  });
-}
-```
-
-## 分发顺序
-
-1. **api: 2 处理器**按注册顺序依次执行，**第一个返回非空结果**的处理器生效并结束分发
-2. 返回 `null` / `undefined` / 空字符串不会阻断后续处理器
-3. 没有任何 api: 2 处理器响应时，回退到 **api: 1 插件**（按消息类型匹配，最后交给 `default` 插件）
-
----
-
-# api: 1 插件（旧版，保持兼容）
-
-无需 `api` 字段。插件导出一个与 `manifest.name` 同名的对象：
-
-```js
-// plugins/hello/main.js (CommonJS，照旧可用)
-const config = require('./config');
-
-module.exports = {
-  helloPlugin: {
-    async init() {
-      console.log('初始化');
-    },
-
-    async main(msgType, msgContent, senderOpenid, isPrivate) {
-      return `已处理${isPrivate ? '私聊' : '群聊'}消息: ${msgContent}`;
-    },
-
-    async cleanup() {
-      console.log('清理资源');
-    },
-  },
+  onMessage, on, onInteraction, onUnload,
 };
 ```
 
-- 消息格式：`@bot <消息类型> <消息内容>`（群聊）或 `<消息类型> <消息内容>`（私聊）
-- 返回值：字符串（纯文本）或 `{ text, image }` 对象
-- 上下文：`this.ctx.utils.md2html` / `html2img` / `md2img`、`this.ctx.logger`
+## 开放接口示例
 
----
+```ts
+// 主动推送到群
+await ctx.api.message.send({ scene: 'group', id: groupOpenid }, '定时播报');
 
-# 通用机制
+// 主动推送到用户（含互动召回）
+await ctx.api.message.send({ scene: 'user', id: userOpenid }, '好久不见', { wakeup: true });
 
-## 热重载
+// 单聊流式消息（首片不传 streamMsgId）
+const first = await ctx.api.message.sendStream(userOpenid, { index: 0, content: '正在思考' });
+await ctx.api.message.sendStream(userOpenid, {
+  index: 1, streamMsgId: first.id, content: '正在思考…完成', inputState: 10,
+});
 
-`plugins` 目录发生变化（新增/修改插件目录，或放入 ZIP 包）时，框架会在 1 秒防抖后自动重载全部插件；重载前会依次执行 api: 2 的 `onUnload` 回调与 api: 1 插件的 `cleanup()`。
+// 上传并发送本地图片
+const uploaded = await ctx.api.media.uploadBuffer('group', groupOpenid, buffer, { fileType: 1 });
+await ctx.api.message.send({ scene: 'group', id: groupOpenid }, { media: { file_info: uploaded.file_info } });
 
-## ZIP 插件包
+// 撤回消息（2 分钟内）
+await ctx.api.message.recallGroup(groupOpenid, messageId);
 
-把插件目录整体打包，**zip 内必须且只能有一个顶级目录**：
+// 群管理
+const info = await ctx.api.group.info(groupOpenid);
+const { items } = await ctx.api.group.members(groupOpenid);
+await ctx.api.group.setMemberMute(groupOpenid, [{ op: 'add', member_openid: id, mute_expire_at: expireAt }]);
+await ctx.api.group.approveJoinRequest(groupOpenid, memberOpenid, { op: 'approve', joinRequestId });
 
+// 机器人信息 / 分享链接
+const me = await ctx.api.bot.me();
+const link = await ctx.api.bot.generateUrlLink('from-hello');
+
+// 指令面板（c2c/group/channel/dm）
+const panelId = await ctx.api.panel.create({
+  scope: 'group',
+  panel: { items: [{ name: '签到', type: 'command' }] },
+});
+
+// 自定义菜单（仅单聊，全局）
+await ctx.api.menu.set([{ name: '帮助', type: 'send_message', send_message: '/help' }]);
+
+// 任意未封装接口
+await ctx.api.client.post('/v2/...', body);
 ```
-my-plugin.zip
-└── my-plugin/
-    ├── manifest.json
-    └── main.ts
+
+失败会抛出 `QQApiError`，含 `code`（err_code）、`status`、`traceId`（排查时提供给平台）。
+
+## 图片渲染
+
+```ts
+const image = await ctx.util.image.withMarkdown('# 标题\n- 内容', { imgOptions: { width: 600 } });
+return { image };
 ```
 
-把 zip 直接放进 `plugins/` 目录，框架会自动解压、安装并删除 zip（已存在的同名插件目录会被备份为 `<目录名>_<时间戳>`）。
+选项：`width` / `height` / `type` / `quality` / `fullPage` / `transparent` / `deviceScaleFactor` / `timeout` / `waitFor`。
 
-## TypeScript 插件
+## 热重载与打包
 
-- 直接写 `.ts` 即可，无需编译
-- 框架使用 Node 的类型剥离运行，因此**请勿使用** `enum`、`namespace`、构造函数参数属性等需要代码转换的语法；类型导入请写 `import type { ... } from '...'`
-- 可从框架引用类型（仅类型层面，运行时会被擦除）：
+- 修改插件目录或放入 ZIP 包后，框架 1 秒防抖自动重载；重载前执行 `onUnload` 回调
+- 重载导致事件订阅变化时，框架会自动重新鉴权网关，使新 `intents` 生效
+- ZIP 包内必须且只能有一个顶级目录，安装完成后自动删除 ZIP
 
-  ```ts
-  import type { PluginContextV2 } from '../../src/types/index.ts';
+## TypeScript 注意
 
-  export function init(ctx: PluginContextV2): void {
-    ctx.onGroup({ prefix: 'hi', handler: () => '你好' });
-  }
-  ```
+Node 使用类型剥离运行 `.ts`，请勿使用 `enum`、`namespace`、构造函数参数属性等需要代码转换的语法；类型导入请写 `import type`：
 
-## 最佳实践
+```ts
+import type { PluginContext, MessageContext } from '../../qybot.js';
 
-1. **错误兜底**：在 handler 内部 try/catch，返回友好文案；未捕获的异常会被框架记录并跳过该处理器
-2. **避免超大图片**：控制 `width`，必要时使用 `type: 'jpeg'` + `quality`
-3. **使用远程 URL**：能直接拿到图片链接时返回 URL 字符串，省去上传开销
-4. **资源释放**：用 `ctx.onUnload()`（api: 2）或 `cleanup()`（api: 1）释放定时器、连接等
-5. **配置外置**：密钥等写入独立的 `config.ts` / `config.json`，不要硬编码
+export function init(ctx: PluginContext): void {
+  ctx.onMessage('at', { prefix: 'hi', handler: (msg: MessageContext) => '你好' });
+}
+```
+
+## 内置示例
+
+- `plugins/hello` — 前缀指令、Markdown+按钮、全量群消息、互动回调、进群/加好友事件
+- `plugins/image-demo` — 图片渲染、主动推送

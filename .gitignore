@@ -2,3 +2,4 @@ node_modules/
 package-lock.json.bak
 *.log
 .DS_Store
+.tmp-types/

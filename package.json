@@ -1,6 +1,6 @@
 {
   "name": "qybot",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "A Node.js-based QQ chatbot framework with plugin support",
   "type": "module",
   "main": "src/main.ts",
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
+    "build:types": "node scripts/build-types.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -31,7 +32,6 @@
   "homepage": "https://github.com/iYeXin/qybot#readme",
   "dependencies": {
     "adm-zip": "^0.5.16",
-    "axios": "^1.7.2",
     "markdown-it": "^14.1.0",
     "playwright-core": "^1.48.0",
     "ws": "^8.18.0"

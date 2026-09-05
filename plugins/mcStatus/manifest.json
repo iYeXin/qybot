@@ -1,9 +1,0 @@
-{
-    "name": "mcStatusPlugin",
-    "version": 1.0,
-    "mainExport": "./main",
-    "processingTypes": [
-        "mc",
-        "/mc"
-    ]
-}

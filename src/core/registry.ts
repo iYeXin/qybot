@@ -1,55 +1,134 @@
-import type {
-  HandlerRegistration,
-  IncomingMessage,
-  MessageScope,
-  PluginResult,
-} from '../types/index.ts';
 import { logger } from './logger.ts';
+import type {
+  EventContext,
+  EventHandler,
+  InteractionContext,
+  InteractionHandler,
+  InteractionHandlerOptions,
+  MessageContent,
+  MessageContext,
+  MessageHandler,
+  MessageHandlerOptions,
+  MessageScope,
+  SentMessage,
+  UnloadCallback,
+} from '../types/index.ts';
 
-/** 一条已注册的处理器（带作用域） */
-interface RegisteredHandler extends HandlerRegistration {
-  scope: MessageScope;
+/** 消息类别（内部使用，'any' 表示全部） */
+export type MessageKind = 'at' | 'group' | 'c2c';
+
+/** 已注册的消息处理器（注册时已校验并归一化） */
+interface MessageRegistration {
+  kind: MessageKind | 'any';
+  groups?: string[];
+  match?: RegExp;
+  prefixes?: string[];
+  ignoreCase: boolean;
+  handler: MessageHandler;
 }
 
-/** 作用域是否匹配 */
-function scopeMatches(scope: MessageScope, msg: IncomingMessage): boolean {
-  if (scope === 'all') return true;
-  return scope === 'private' ? msg.isPrivate : !msg.isPrivate;
+/** 已注册的事件处理器 */
+interface EventRegistration {
+  events: string[];
+  handler: EventHandler;
 }
 
-/** 群白名单是否匹配 */
-function groupMatches(groupId: string | string[] | undefined, msg: IncomingMessage): boolean {
-  if (!groupId) return true;
-  if (!msg.groupId) return false;
-  return Array.isArray(groupId) ? groupId.includes(msg.groupId) : groupId === msg.groupId;
+/** 已注册的互动处理器 */
+interface InteractionRegistration {
+  types?: number[];
+  handler: InteractionHandler;
+}
+
+/** 匹配结果 */
+export interface MatchResult {
+  text: string;
+  match?: RegExpMatchArray;
+  prefix?: string;
 }
 
 /**
- * api: 2 插件的消息处理器注册中心
+ * 事件处理器注册中心
  *
- * 分发规则：按注册顺序依次执行，第一个返回非 null 结果的处理器生效，
- * 返回 null / undefined / 空字符串的处理器不会阻断后续处理器。
+ * 分发规则：按注册顺序执行所有命中的处理器，每个返回非空结果的处理器都会回复；
+ * 返回 null / undefined / 空字符串的处理器不回复，也不阻断后续处理器。
+ * 单个处理器的异常或发送失败只跳过该处理器，不影响其他处理器。
  */
 export class HandlerRegistry {
-  private handlers: RegisteredHandler[] = [];
-  private unloadCallbacks: Array<() => void | Promise<void>> = [];
+  private messageHandlers: MessageRegistration[] = [];
+  private eventHandlers: EventRegistration[] = [];
+  private interactionHandlers: InteractionRegistration[] = [];
+  private unloadCallbacks: UnloadCallback[] = [];
 
-  /** 注册处理器 */
-  add(scope: MessageScope, registration: HandlerRegistration): void {
-    this.handlers.push({ ...registration, scope });
+  /** 注册消息处理器（参数错误直接抛错，避免静默失效） */
+  addMessage(scope: MessageScope, options: MessageHandlerOptions): void {
+    if (typeof options?.handler !== 'function') {
+      throw new Error('onMessage 缺少 handler 函数');
+    }
+    if (options.prefix !== undefined && options.match !== undefined) {
+      throw new Error('onMessage 的 prefix 与 match 互斥，只能二选一');
+    }
+
+    const groups =
+      options.groups === undefined
+        ? undefined
+        : (Array.isArray(options.groups) ? options.groups : [options.groups]);
+    if (groups !== undefined && groups.length === 0) {
+      throw new Error('onMessage 的 groups 为空数组，处理器将永远不会触发');
+    }
+
+    let prefixes: string[] | undefined;
+    if (options.prefix !== undefined) {
+      prefixes = Array.isArray(options.prefix) ? options.prefix : [options.prefix];
+      if (prefixes.length === 0 || prefixes.some((prefix) => prefix === '')) {
+        throw new Error('onMessage 的 prefix 不能为空（字符串或非空数组）');
+      }
+    }
+
+    this.messageHandlers.push({
+      kind: scope === 'all' ? 'any' : scope,
+      ...(groups ? { groups } : {}),
+      ...(options.match ? { match: options.match } : {}),
+      ...(prefixes ? { prefixes } : {}),
+      ignoreCase: options.ignoreCase ?? false,
+      handler: options.handler,
+    });
+  }
+
+  /** 注册事件处理器 */
+  addEvent(events: string[], handler: EventHandler): void {
+    if (typeof handler !== 'function') {
+      throw new Error('on 缺少 handler 函数');
+    }
+    const names = events.map((name) => name.toUpperCase()).filter((name) => name !== '');
+    if (names.length === 0) {
+      throw new Error('on 的事件名不能为空');
+    }
+    this.eventHandlers.push({ events: names, handler });
+  }
+
+  /** 注册互动处理器 */
+  addInteraction(options: InteractionHandlerOptions): void {
+    if (typeof options?.handler !== 'function') {
+      throw new Error('onInteraction 缺少 handler 函数');
+    }
+    const types =
+      options.type === undefined ? undefined : Array.isArray(options.type) ? options.type : [options.type];
+    this.interactionHandlers.push({ handler: options.handler, ...(types ? { types } : {}) });
   }
 
   /** 注册卸载回调 */
-  onUnload(callback: () => void | Promise<void>): void {
+  onUnload(callback: UnloadCallback): void {
     this.unloadCallbacks.push(callback);
   }
 
-  /** 清空所有处理器 */
-  clearHandlers(): void {
-    this.handlers = [];
+  /** 清空全部处理器（插件重载时调用） */
+  clear(): void {
+    this.messageHandlers = [];
+    this.eventHandlers = [];
+    this.interactionHandlers = [];
   }
 
-  /** 执行所有卸载回调 */
+  /** 执行全部卸载回调 */
   async runUnloadCallbacks(): Promise<void> {
     const callbacks = this.unloadCallbacks;
     this.unloadCallbacks = [];
@@ -57,56 +136,181 @@ export class HandlerRegistry {
     for (const callback of callbacks) {
       try {
         await callback();
-      } catch {
-        // 卸载阶段忽略异常
+      } catch (error) {
+        logger.error('PLUGIN', '卸载回调执行失败:', error);
       }
     }
   }
 
-  /** 分发消息，返回第一个非空结果 */
-  async dispatch(msg: IncomingMessage): Promise<PluginResult> {
-    for (const entry of this.handlers) {
-      if (!scopeMatches(entry.scope, msg)) continue;
-      if (!groupMatches(entry.groupId, msg)) continue;
+  /** 当前注册所依赖的事件（用于自动计算 intents） */
+  requiredEvents(): string[] {
+    const events = new Set<string>();
 
-      const matched = this.matchMessage(entry, msg);
+    for (const item of this.messageHandlers) {
+      if (item.kind === 'at' || item.kind === 'any') events.add('GROUP_AT_MESSAGE_CREATE');
+      if (item.kind === 'group' || item.kind === 'any') events.add('GROUP_MESSAGE_CREATE');
+      if (item.kind === 'c2c' || item.kind === 'any') events.add('C2C_MESSAGE_CREATE');
+    }
+
+    for (const item of this.eventHandlers) {
+      for (const name of item.events) events.add(name);
+    }
+
+    if (this.interactionHandlers.length > 0) events.add('INTERACTION_CREATE');
+
+    return [...events];
+  }
+
+  /** 分发消息：所有命中的处理器都会回复，返回成功发送的处理器数 */
+  async dispatchMessage(
+    kind: MessageKind,
+    content: string,
+    groupOpenid: string | undefined,
+    createContext: (extra: MatchResult) => MessageContext
+  ): Promise<number> {
+    let sentCount = 0;
+
+    for (const item of this.messageHandlers) {
+      if (item.kind !== 'any' && item.kind !== kind) continue;
+      if (!this.groupMatches(item.groups, groupOpenid)) continue;
+
+      const matched = this.match(content, item);
       if (!matched) continue;
 
-      let result: PluginResult;
+      const context = createContext(matched);
+      let result: unknown;
       try {
-        result = await entry.handler({ ...msg, ...matched });
+        result = await item.handler(context);
       } catch (error) {
-        logger.error('PLUGIN', '消息处理器执行失败:', error);
+        logger.error('PLUGIN', `${kind} 消息处理器执行失败:`, error);
         continue;
       }
 
-      if (result !== null && result !== undefined && result !== '') return result;
+      if (this.isEmpty(result)) continue;
+      // 处理器返回内容时自动回复本条消息
+      let sent: SentMessage[] = [];
+      try {
+        sent = await context.reply(result as MessageContent);
+      } catch (error) {
+        logger.error('PLUGIN', `${kind} 消息处理器回复失败:`, error);
+        continue;
+      }
+      if (sent.length === 0) {
+        logger.warn('PLUGIN', `${kind} 消息处理器返回了内容，但未能实际发送`);
+        continue;
+      }
+      sentCount++;
     }
-    return null;
+    return sentCount;
   }
 
-  /** 计算匹配结果，未命中返回 null */
-  private matchMessage(
-    entry: RegisteredHandler,
-    msg: IncomingMessage
-  ): Pick<IncomingMessage, 'text' | 'match' | 'prefix'> | null {
-    const content = msg.content;
+  /** 分发通用事件：所有命中的处理器都会回复，返回成功发送的处理器数 */
+  async dispatchEvent(event: string, createContext: () => EventContext): Promise<number> {
+    const name = event.toUpperCase();
+    let sentCount = 0;
 
-    // 正则匹配
-    if (entry.match) {
-      const match = entry.match.exec(content);
+    for (const item of this.eventHandlers) {
+      if (!item.events.includes(name)) continue;
+
+      const context = createContext();
+      let result: unknown;
+      try {
+        result = await item.handler(context);
+      } catch (error) {
+        logger.error('PLUGIN', `${name} 事件处理器执行失败:`, error);
+        continue;
+      }
+
+      if (this.isEmpty(result)) continue;
+      if (!context.reply) {
+        logger.warn('PLUGIN', `${name} 事件不支持回复，处理器返回值已被忽略`);
+        continue;
+      }
+      let sent: SentMessage[] = [];
+      try {
+        sent = await context.reply(result as MessageContent);
+      } catch (error) {
+        logger.error('PLUGIN', `${name} 事件处理器回复失败:`, error);
+        continue;
+      }
+      if (sent.length === 0) {
+        logger.warn('PLUGIN', `${name} 事件处理器返回了内容，但未能实际发送`);
+        continue;
+      }
+      sentCount++;
+    }
+    return sentCount;
+  }
+
+  /** 分发互动事件：所有命中的处理器都会回复，返回成功发送的处理器数 */
+  async dispatchInteraction(
+    type: number | undefined,
+    createContext: () => InteractionContext
+  ): Promise<number> {
+    let sentCount = 0;
+
+    for (const item of this.interactionHandlers) {
+      if (item.types && type !== undefined && !item.types.includes(type)) continue;
+
+      const context = createContext();
+      let result: unknown;
+      try {
+        result = await item.handler(context);
+      } catch (error) {
+        logger.error('PLUGIN', '互动处理器执行失败:', error);
+        continue;
+      }
+
+      if (this.isEmpty(result)) continue;
+      let sent: SentMessage[] = [];
+      try {
+        sent = await context.reply(result as MessageContent);
+      } catch (error) {
+        logger.error('PLUGIN', '互动处理器回复失败:', error);
+        continue;
+      }
+      if (sent.length === 0) {
+        logger.warn('PLUGIN', '互动处理器返回了内容，但未能实际发送');
+        continue;
+      }
+      sentCount++;
+    }
+    return sentCount;
+  }
+
+  /** 群白名单匹配 */
+  private groupMatches(groups: string[] | undefined, groupOpenid?: string): boolean {
+    if (!groups) return true;
+    if (!groupOpenid) return false;
+    return groups.includes(groupOpenid);
+  }
+
+  /** 计算 prefix / match 匹配结果 */
+  private match(content: string, item: MessageRegistration): MatchResult | null {
+    if (item.match) {
+      // 带 g/y 标志的正则 exec 是有状态的，每次匹配前复位，避免轮询漏匹配
+      item.match.lastIndex = 0;
+      const match = item.match.exec(content);
       if (!match) return null;
       return { text: content, match };
     }
 
-    // 前缀匹配
-    if (entry.prefix) {
-      if (!content.startsWith(entry.prefix)) return null;
-      const text = content.slice(entry.prefix.length).trim();
-      return { text, prefix: entry.prefix };
+    if (item.prefixes) {
+      const source = item.ignoreCase ? content.toLowerCase() : content;
+      for (const prefix of item.prefixes) {
+        const expected = item.ignoreCase ? prefix.toLowerCase() : prefix;
+        if (source.startsWith(expected)) {
+          return { text: content.slice(prefix.length).trim(), prefix };
+        }
+      }
+      return null;
     }
 
-    // 未声明匹配条件：接收该作用域的全部消息
     return { text: content };
+  }
+
+  /** 结果是否为空（不产生回复） */
+  private isEmpty(result: unknown): boolean {
+    return result === null || result === undefined || result === '';
   }
 }
